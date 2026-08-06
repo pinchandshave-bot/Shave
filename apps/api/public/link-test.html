@@ -9,15 +9,18 @@
   <h2>shave — Plaid Sandbox Link Test</h2>
   <button id="link-btn">Connect a bank (Sandbox)</button>
   <pre id="result" style="background:#eee; padding:10px; margin-top:20px; white-space:pre-wrap;"></pre>
-
   <script>
+    const INTERNAL_SECRET = 'PASTE_YOUR_INTERNAL_SECRET_HERE';
+
     document.getElementById('link-btn').addEventListener('click', async () => {
       const result = document.getElementById('result');
       result.textContent = 'Requesting link_token...';
 
-      const tokenRes = await fetch('/plaid/create-link-token', { method: 'POST' });
+      const tokenRes = await fetch('/plaid/create-link-token', {
+        method: 'POST',
+        headers: { 'x-internal-secret': INTERNAL_SECRET },
+      });
       const tokenData = await tokenRes.json();
-
       if (tokenData.status !== 'ok') {
         result.textContent = 'Error getting link_token: ' + JSON.stringify(tokenData, null, 2);
         return;
@@ -27,17 +30,18 @@
         token: tokenData.link_token,
         onSuccess: async (public_token, metadata) => {
           result.textContent = 'Link succeeded. Exchanging token and saving to database...';
-
           const exchangeRes = await fetch('/plaid/exchange-public-token', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              'x-internal-secret': INTERNAL_SECRET,
+            },
             body: JSON.stringify({
               public_token,
               institution_name: metadata.institution?.name || null,
             }),
           });
           const exchangeData = await exchangeRes.json();
-
           result.textContent = 'STORED\n' + JSON.stringify(exchangeData, null, 2);
         },
         onExit: (err, metadata) => {
@@ -48,7 +52,6 @@
           }
         },
       });
-
       handler.open();
     });
   </script>
