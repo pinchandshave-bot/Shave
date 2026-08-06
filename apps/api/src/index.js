@@ -1,6 +1,5 @@
 require('dotenv').config();
 const express = require('express');
-app.use(express.static('public'));
 const cors = require('cors');
 const pool = require('./db');
 const plaidClient = require('./plaidClient');
@@ -8,6 +7,7 @@ const plaidClient = require('./plaidClient');
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.use(express.static('public'));
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'shave-api', time: new Date().toISOString() });
