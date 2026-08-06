@@ -25,8 +25,20 @@
 
       const handler = Plaid.create({
         token: tokenData.link_token,
-        onSuccess: (public_token, metadata) => {
-          result.textContent = 'SUCCESS\npublic_token: ' + public_token + '\n\nmetadata: ' + JSON.stringify(metadata, null, 2);
+        onSuccess: async (public_token, metadata) => {
+          result.textContent = 'Link succeeded. Exchanging token and saving to database...';
+
+          const exchangeRes = await fetch('/plaid/exchange-public-token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              public_token,
+              institution_name: metadata.institution?.name || null,
+            }),
+          });
+          const exchangeData = await exchangeRes.json();
+
+          result.textContent = 'STORED\n' + JSON.stringify(exchangeData, null, 2);
         },
         onExit: (err, metadata) => {
           if (err) {
