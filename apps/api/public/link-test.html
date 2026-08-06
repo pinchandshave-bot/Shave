@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>shave — Plaid Link Test</title>
+  <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
+</head>
+<body style="font-family: sans-serif; padding: 20px;">
+  <h2>shave — Plaid Sandbox Link Test</h2>
+  <button id="link-btn">Connect a bank (Sandbox)</button>
+  <pre id="result" style="background:#eee; padding:10px; margin-top:20px; white-space:pre-wrap;"></pre>
+
+  <script>
+    document.getElementById('link-btn').addEventListener('click', async () => {
+      const result = document.getElementById('result');
+      result.textContent = 'Requesting link_token...';
+
+      const tokenRes = await fetch('/plaid/create-link-token', { method: 'POST' });
+      const tokenData = await tokenRes.json();
+
+      if (tokenData.status !== 'ok') {
+        result.textContent = 'Error getting link_token: ' + JSON.stringify(tokenData, null, 2);
+        return;
+      }
+
+      const handler = Plaid.create({
+        token: tokenData.link_token,
+        onSuccess: (public_token, metadata) => {
+          result.textContent = 'SUCCESS\npublic_token: ' + public_token + '\n\nmetadata: ' + JSON.stringify(metadata, null, 2);
+        },
+        onExit: (err, metadata) => {
+          if (err) {
+            result.textContent = 'EXIT WITH ERROR\n' + JSON.stringify(err, null, 2);
+          } else {
+            result.textContent = 'User exited before finishing.';
+          }
+        },
+      });
+
+      handler.open();
+    });
+  </script>
+</body>
+</html>
