@@ -10,6 +10,14 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
 
+function requireInternalSecret(req, res, next) {
+  const provided = req.headers['x-internal-secret'];
+  if (!provided || provided !== process.env.INTERNAL_SECRET) {
+    return res.status(401).json({ status: 'error', message: 'Unauthorized' });
+  }
+  next();
+}
+
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'shave-api', time: new Date().toISOString() });
 });
@@ -23,7 +31,7 @@ app.get('/db-check', async (req, res) => {
   }
 });
 
-app.post('/plaid/create-link-token', async (req, res) => {
+app.post('/plaid/create-link-token', requireInternalSecret, async (req, res) => {
   try {
     const response = await plaidClient.linkTokenCreate({
       user: { client_user_id: 'test-user-' + Date.now() },
@@ -39,7 +47,7 @@ app.post('/plaid/create-link-token', async (req, res) => {
   }
 });
 
-app.post('/plaid/exchange-public-token', async (req, res) => {
+app.post('/plaid/exchange-public-token', requireInternalSecret, async (req, res) => {
   try {
     const { public_token, institution_name } = req.body;
     if (!public_token) {
