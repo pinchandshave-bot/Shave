@@ -1,5 +1,6 @@
 require('dotenv').config();
 const express = require('express');
+app.use(express.static('public'));
 const cors = require('cors');
 const pool = require('./db');
 const plaidClient = require('./plaidClient');
