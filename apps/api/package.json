@@ -1,0 +1,18 @@
+{
+  "name": "shave-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node src/index.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "pg": "^8.13.1",
+    "dotenv": "^16.4.7",
+    "cors": "^2.8.5",
+    "plaid": "^33.0.0"
+  }
+}
