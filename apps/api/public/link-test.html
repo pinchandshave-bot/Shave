@@ -7,6 +7,7 @@
 </head>
 <body style="font-family: sans-serif; padding: 20px; max-width: 480px;">
   <h2>shave — Real Login + Plaid Link Test</h2>
+  <p style="color:#666; font-size:14px;">First request after idle time can take up to 60 seconds while the free server wakes up. Stay on this screen and wait — don't switch apps.</p>
 
   <div id="auth-section">
     <input id="email" type="email" placeholder="email" style="display:block; margin-bottom:8px; width:100%; padding:8px;">
@@ -29,22 +30,26 @@
     async function doAuth(path) {
       const email = document.getElementById('email').value;
       const password = document.getElementById('password').value;
-      result.textContent = 'Submitting...';
-      const res = await fetch(path, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
-      });
-      const data = await res.json();
-      if (data.status !== 'ok') {
-        result.textContent = 'Error: ' + JSON.stringify(data, null, 2);
-        return;
+      result.textContent = 'Submitting... (may take up to 60s if the server was asleep)';
+      try {
+        const res = await fetch(path, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password }),
+        });
+        const data = await res.json();
+        if (data.status !== 'ok') {
+          result.textContent = 'Error: ' + JSON.stringify(data, null, 2);
+          return;
+        }
+        AUTH_TOKEN = data.token;
+        document.getElementById('logged-in-email').textContent = data.user.email;
+        document.getElementById('auth-section').style.display = 'none';
+        document.getElementById('linked-section').style.display = 'block';
+        result.textContent = 'Logged in. Token stored for this session only.';
+      } catch (err) {
+        result.textContent = 'Request failed: ' + err.message + '\n\nIf this was the first request in a while, the server may still be waking up — wait 15 seconds and try again.';
       }
-      AUTH_TOKEN = data.token;
-      document.getElementById('logged-in-email').textContent = data.user.email;
-      document.getElementById('auth-section').style.display = 'none';
-      document.getElementById('linked-section').style.display = 'block';
-      result.textContent = 'Logged in. Token stored for this session only.';
     }
 
     document.getElementById('signup-btn').addEventListener('click', () => doAuth('/auth/signup'));
@@ -52,38 +57,46 @@
 
     document.getElementById('link-btn').addEventListener('click', async () => {
       result.textContent = 'Requesting link_token...';
-      const tokenRes = await fetch('/plaid/create-link-token', {
-        method: 'POST',
-        headers: { 'Authorization': 'Bearer ' + AUTH_TOKEN },
-      });
-      const tokenData = await tokenRes.json();
-      if (tokenData.status !== 'ok') {
-        result.textContent = 'Error getting link_token: ' + JSON.stringify(tokenData, null, 2);
-        return;
+      try {
+        const tokenRes = await fetch('/plaid/create-link-token', {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + AUTH_TOKEN },
+        });
+        const tokenData = await tokenRes.json();
+        if (tokenData.status !== 'ok') {
+          result.textContent = 'Error getting link_token: ' + JSON.stringify(tokenData, null, 2);
+          return;
+        }
+        const handler = Plaid.create({
+          token: tokenData.link_token,
+          onSuccess: async (public_token, metadata) => {
+            result.textContent = 'Link succeeded. Exchanging token and saving to database...';
+            try {
+              const exchangeRes = await fetch('/plaid/exchange-public-token', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': 'Bearer ' + AUTH_TOKEN,
+                },
+                body: JSON.stringify({
+                  public_token,
+                  institution_name: metadata.institution?.name || null,
+                }),
+              });
+              const exchangeData = await exchangeRes.json();
+              result.textContent = 'STORED\n' + JSON.stringify(exchangeData, null, 2);
+            } catch (err) {
+              result.textContent = 'Exchange request failed: ' + err.message;
+            }
+          },
+          onExit: (err, metadata) => {
+            result.textContent = err ? 'EXIT WITH ERROR\n' + JSON.stringify(err, null, 2) : 'User exited before finishing.';
+          },
+        });
+        handler.open();
+      } catch (err) {
+        result.textContent = 'Link token request failed: ' + err.message;
       }
-      const handler = Plaid.create({
-        token: tokenData.link_token,
-        onSuccess: async (public_token, metadata) => {
-          result.textContent = 'Link succeeded. Exchanging token and saving to database...';
-          const exchangeRes = await fetch('/plaid/exchange-public-token', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': 'Bearer ' + AUTH_TOKEN,
-            },
-            body: JSON.stringify({
-              public_token,
-              institution_name: metadata.institution?.name || null,
-            }),
-          });
-          const exchangeData = await exchangeRes.json();
-          result.textContent = 'STORED\n' + JSON.stringify(exchangeData, null, 2);
-        },
-        onExit: (err, metadata) => {
-          result.textContent = err ? 'EXIT WITH ERROR\n' + JSON.stringify(err, null, 2) : 'User exited before finishing.';
-        },
-      });
-      handler.open();
     });
   </script>
 </body>
