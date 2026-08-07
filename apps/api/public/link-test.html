@@ -5,27 +5,62 @@
   <title>shave — Plaid Link Test</title>
   <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
 </head>
-<body style="font-family: sans-serif; padding: 20px;">
-  <h2>shave — Plaid Sandbox Link Test</h2>
-  <button id="link-btn">Connect a bank (Sandbox)</button>
+<body style="font-family: sans-serif; padding: 20px; max-width: 480px;">
+  <h2>shave — Real Login + Plaid Link Test</h2>
+
+  <div id="auth-section">
+    <input id="email" type="email" placeholder="email" style="display:block; margin-bottom:8px; width:100%; padding:8px;">
+    <input id="password" type="password" placeholder="password (8+ chars)" style="display:block; margin-bottom:8px; width:100%; padding:8px;">
+    <button id="signup-btn">Sign Up</button>
+    <button id="login-btn">Log In</button>
+  </div>
+
+  <div id="linked-section" style="display:none; margin-top:20px;">
+    <p>Logged in as <strong id="logged-in-email"></strong></p>
+    <button id="link-btn">Connect a bank</button>
+  </div>
+
   <pre id="result" style="background:#eee; padding:10px; margin-top:20px; white-space:pre-wrap;"></pre>
+
   <script>
-    const INTERNAL_SECRET = 'PASTE_YOUR_INTERNAL_SECRET_HERE';
+    let AUTH_TOKEN = null;
+    const result = document.getElementById('result');
+
+    async function doAuth(path) {
+      const email = document.getElementById('email').value;
+      const password = document.getElementById('password').value;
+      result.textContent = 'Submitting...';
+      const res = await fetch(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await res.json();
+      if (data.status !== 'ok') {
+        result.textContent = 'Error: ' + JSON.stringify(data, null, 2);
+        return;
+      }
+      AUTH_TOKEN = data.token;
+      document.getElementById('logged-in-email').textContent = data.user.email;
+      document.getElementById('auth-section').style.display = 'none';
+      document.getElementById('linked-section').style.display = 'block';
+      result.textContent = 'Logged in. Token stored for this session only.';
+    }
+
+    document.getElementById('signup-btn').addEventListener('click', () => doAuth('/auth/signup'));
+    document.getElementById('login-btn').addEventListener('click', () => doAuth('/auth/login'));
 
     document.getElementById('link-btn').addEventListener('click', async () => {
-      const result = document.getElementById('result');
       result.textContent = 'Requesting link_token...';
-
       const tokenRes = await fetch('/plaid/create-link-token', {
         method: 'POST',
-        headers: { 'x-internal-secret': INTERNAL_SECRET },
+        headers: { 'Authorization': 'Bearer ' + AUTH_TOKEN },
       });
       const tokenData = await tokenRes.json();
       if (tokenData.status !== 'ok') {
         result.textContent = 'Error getting link_token: ' + JSON.stringify(tokenData, null, 2);
         return;
       }
-
       const handler = Plaid.create({
         token: tokenData.link_token,
         onSuccess: async (public_token, metadata) => {
@@ -34,7 +69,7 @@
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'x-internal-secret': INTERNAL_SECRET,
+              'Authorization': 'Bearer ' + AUTH_TOKEN,
             },
             body: JSON.stringify({
               public_token,
@@ -45,11 +80,7 @@
           result.textContent = 'STORED\n' + JSON.stringify(exchangeData, null, 2);
         },
         onExit: (err, metadata) => {
-          if (err) {
-            result.textContent = 'EXIT WITH ERROR\n' + JSON.stringify(err, null, 2);
-          } else {
-            result.textContent = 'User exited before finishing.';
-          }
+          result.textContent = err ? 'EXIT WITH ERROR\n' + JSON.stringify(err, null, 2) : 'User exited before finishing.';
         },
       });
       handler.open();
