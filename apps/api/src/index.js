@@ -4,7 +4,8 @@ const cors = require('cors');
 const pool = require('./db');
 const plaidClient = require('./plaidClient');
 const { encrypt } = require('./crypto');
-const { requireAuth, signup, login } = require('./auth');
+const { requireAuth, requireInternalSecret, signup, login } = require('./auth');
+const { runSync } = require('./sync');
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -27,20 +28,13 @@ app.post('/auth/login', login);
 
 app.post('/plaid/create-link-token', requireAuth, async (req, res) => {
   try {
-    const config = {
+    const response = await plaidClient.linkTokenCreate({
       user: { client_user_id: req.user.id },
       client_name: 'shave',
       products: ['auth', 'transactions'],
       country_codes: ['US'],
       language: 'en',
-    };
-    // Required for OAuth institutions (Chase, BofA, Wells Fargo, etc.) to work
-    // on mobile web. Must exactly match a URL registered in the Plaid
-    // Dashboard under Team Settings > API > Allowed redirect URIs.
-    if (process.env.PLAID_REDIRECT_URI) {
-      config.redirect_uri = process.env.PLAID_REDIRECT_URI;
-    }
-    const response = await plaidClient.linkTokenCreate(config);
+    });
     res.json({ status: 'ok', link_token: response.data.link_token });
   } catch (err) {
     const detail = err.response?.data || err.message;
@@ -80,6 +74,8 @@ app.post('/plaid/exchange-public-token', requireAuth, async (req, res) => {
     res.status(500).json({ status: 'error', detail });
   }
 });
+
+app.post('/internal/sync/run', requireInternalSecret, runSync);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
