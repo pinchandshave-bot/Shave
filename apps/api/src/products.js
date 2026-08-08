@@ -27,8 +27,6 @@ async function syncLiabilities(accessToken, acctMap) {
     const response = await plaidClient.liabilitiesGet({ access_token: accessToken });
     data = response.data.liabilities;
   } catch (err) {
-    // Not every linked account type returns liabilities data — Plaid errors
-    // on that rather than returning empty. Treat as "nothing to sync."
     return;
   }
   if (!data) return;
@@ -121,7 +119,7 @@ async function syncInvestments(accessToken, acctMap) {
     const response = await plaidClient.investmentsHoldingsGet({ access_token: accessToken });
     data = response.data;
   } catch (err) {
-    return; // Item has no investment accounts — expected, not an error.
+    return;
   }
   const securitiesById = {};
   for (const sec of data.securities || []) securitiesById[sec.security_id] = sec;
@@ -168,3 +166,14 @@ async function syncIdentity(accessToken, plaidItemDbId, acctMap) {
          names = excluded.names, emails = excluded.emails,
          phone_numbers = excluded.phone_numbers, addresses = excluded.addresses, updated_at = now()`,
       [
+        plaidItemDbId, accountId,
+        JSON.stringify(owner.names || []),
+        JSON.stringify((owner.emails || []).map(e => e.data)),
+        JSON.stringify((owner.phone_numbers || []).map(p => p.data)),
+        JSON.stringify(owner.addresses || []),
+      ]
+    );
+  }
+}
+
+module.exports = { syncBalance, syncLiabilities, syncInvestments, syncIdentity };
