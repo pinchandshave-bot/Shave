@@ -2,7 +2,6 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>shave — Plaid Link Test</title>
   <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
 </head>
@@ -11,27 +10,26 @@
   <p style="color:#666; font-size:14px;">First request after idle time can take up to 60 seconds while the free server wakes up. Stay on this screen and wait — don't switch apps.</p>
 
   <div id="auth-section">
-    <input id="email" type="email" placeholder="email" style="display:block; margin-bottom:8px; width:100%; padding:8px; box-sizing:border-box;">
-    <input id="password" type="password" placeholder="password (8+ chars)" style="display:block; margin-bottom:8px; width:100%; padding:8px; box-sizing:border-box;">
+    <input id="email" type="email" placeholder="email" style="display:block; margin-bottom:8px; width:100%; padding:8px;">
+    <input id="password" type="password" placeholder="password (8+ chars)" style="display:block; margin-bottom:8px; width:100%; padding:8px;">
     <button id="signup-btn">Sign Up</button>
     <button id="login-btn">Log In</button>
   </div>
 
   <div id="linked-section" style="display:none; margin-top:20px;">
     <p>Logged in as <strong id="logged-in-email"></strong></p>
-    <button id="link-btn">Connect a bank</button>
+    <button id="link-btn">Connect a new bank</button>
+    <hr style="margin:20px 0;">
+    <p style="font-size:13px; color:#666;">Already-linked item's Plaid item_id (paste from an earlier response) to add Liabilities/Investments/Identity consent to it:</p>
+    <input id="update-item-id" type="text" placeholder="plaid_item_id" style="display:block; margin-bottom:8px; width:100%; padding:8px;">
+    <button id="update-btn">Add more data types to this item</button>
   </div>
 
-  <pre id="result" style="background:#eee; padding:10px; margin-top:20px; white-space:pre-wrap; word-break:break-word;"></pre>
+  <pre id="result" style="background:#eee; padding:10px; margin-top:20px; white-space:pre-wrap;"></pre>
 
   <script>
+    let AUTH_TOKEN = null;
     const result = document.getElementById('result');
-
-    function showLoggedIn(email) {
-      document.getElementById('logged-in-email').textContent = email;
-      document.getElementById('auth-section').style.display = 'none';
-      document.getElementById('linked-section').style.display = 'block';
-    }
 
     async function doAuth(path) {
       const email = document.getElementById('email').value;
@@ -48,88 +46,84 @@
           result.textContent = 'Error: ' + JSON.stringify(data, null, 2);
           return;
         }
-        sessionStorage.setItem('shave_auth_token', data.token);
-        sessionStorage.setItem('shave_user_email', data.user.email);
-        showLoggedIn(data.user.email);
-        result.textContent = 'Logged in. Token stored for this browser session only.';
+        AUTH_TOKEN = data.token;
+        document.getElementById('logged-in-email').textContent = data.user.email;
+        document.getElementById('auth-section').style.display = 'none';
+        document.getElementById('linked-section').style.display = 'block';
+        result.textContent = 'Logged in. Token stored for this session only.';
       } catch (err) {
-        result.textContent = 'Request failed: ' + err.message + '\n\nIf this was the first request in a while, the server may still be waking up — wait 15 seconds and try again.';
+        result.textContent = 'Request failed: ' + err.message;
       }
     }
 
     document.getElementById('signup-btn').addEventListener('click', () => doAuth('/auth/signup'));
     document.getElementById('login-btn').addEventListener('click', () => doAuth('/auth/login'));
 
-    function exchangeToken(public_token, institution_name) {
-      const authToken = sessionStorage.getItem('shave_auth_token');
-      result.textContent = 'Link succeeded. Exchanging token and saving to database...';
-      fetch('/plaid/exchange-public-token', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer ' + authToken,
-        },
-        body: JSON.stringify({ public_token, institution_name: institution_name || null }),
-      })
-        .then((r) => r.json())
-        .then((data) => {
-          result.textContent = 'STORED\n' + JSON.stringify(data, null, 2);
-          sessionStorage.removeItem('shave_link_token');
-        })
-        .catch((err) => {
-          result.textContent = 'Exchange request failed: ' + err.message;
-        });
-    }
-
-    function openLink(token, receivedRedirectUri) {
-      const config = {
-        token,
-        onSuccess: (public_token, metadata) => {
-          exchangeToken(public_token, metadata.institution?.name);
-        },
-        onExit: (err, metadata) => {
-          result.textContent = err ? 'EXIT WITH ERROR\n' + JSON.stringify(err, null, 2) : 'User exited before finishing.';
-        },
-      };
-      if (receivedRedirectUri) config.receivedRedirectUri = receivedRedirectUri;
-      const handler = Plaid.create(config);
-      handler.open();
-    }
-
     document.getElementById('link-btn').addEventListener('click', async () => {
       result.textContent = 'Requesting link_token...';
       try {
-        const authToken = sessionStorage.getItem('shave_auth_token');
         const tokenRes = await fetch('/plaid/create-link-token', {
           method: 'POST',
-          headers: { 'Authorization': 'Bearer ' + authToken },
+          headers: { 'Authorization': 'Bearer ' + AUTH_TOKEN },
         });
         const tokenData = await tokenRes.json();
         if (tokenData.status !== 'ok') {
           result.textContent = 'Error getting link_token: ' + JSON.stringify(tokenData, null, 2);
           return;
         }
-        sessionStorage.setItem('shave_link_token', tokenData.link_token);
-        openLink(tokenData.link_token, null);
-      } catch (err) {
-        result.textContent = 'Link token request failed: ' + err.message;
-      }
+        const handler = Plaid.create({
+          token: tokenData.link_token,
+          onSuccess: async (public_token, metadata) => {
+            result.textContent = 'Link succeeded. Exchanging token and saving to database...';
+            try {
+              const exchangeRes = await fetch('/plaid/exchange-public-token', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + AUTH_TOKEN },
+                body: JSON.stringify({ public_token, institution_name: metadata.institution?.name || null }),
+              });
+              const exchangeData = await exchangeRes.json();
+              result.textContent = 'STORED\n' + JSON.stringify(exchangeData, null, 2);
+            } catch (err) { result.textContent = 'Exchange request failed: ' + err.message; }
+          },
+          onExit: (err) => { result.textContent = err ? 'EXIT WITH ERROR\n' + JSON.stringify(err, null, 2) : 'User exited before finishing.'; }
+        });
+        handler.open();
+      } catch (err) { result.textContent = 'Link token request failed: ' + err.message; }
     });
 
-    window.addEventListener('DOMContentLoaded', () => {
-      const savedEmail = sessionStorage.getItem('shave_user_email');
-      if (savedEmail) showLoggedIn(savedEmail);
-
-      const params = new URLSearchParams(window.location.search);
-      if (params.has('oauth_state_id')) {
-        const savedLinkToken = sessionStorage.getItem('shave_link_token');
-        if (savedLinkToken) {
-          result.textContent = 'Resuming bank connection after redirect...';
-          openLink(savedLinkToken, window.location.href);
-        } else {
-          result.textContent = 'Returned from OAuth but no saved link token was found — please tap Connect a bank again.';
+    document.getElementById('update-btn').addEventListener('click', async () => {
+      const plaid_item_id = document.getElementById('update-item-id').value.trim();
+      if (!plaid_item_id) { result.textContent = 'Paste a plaid_item_id first.'; return; }
+      result.textContent = 'Requesting update-mode link_token...';
+      try {
+        const tokenRes = await fetch('/plaid/create-update-link-token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + AUTH_TOKEN },
+          body: JSON.stringify({ plaid_item_id }),
+        });
+        const tokenData = await tokenRes.json();
+        if (tokenData.status !== 'ok') {
+          result.textContent = 'Error: ' + JSON.stringify(tokenData, null, 2);
+          return;
         }
-      }
+        const handler = Plaid.create({
+          token: tokenData.link_token,
+          onSuccess: async () => {
+            result.textContent = 'Update consent granted. Re-syncing this item...';
+            try {
+              const resyncRes = await fetch('/plaid/resync-after-update', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + AUTH_TOKEN },
+                body: JSON.stringify({ plaid_item_id }),
+              });
+              const resyncData = await resyncRes.json();
+              result.textContent = 'RESYNCED\n' + JSON.stringify(resyncData, null, 2);
+            } catch (err) { result.textContent = 'Resync failed: ' + err.message; }
+          },
+          onExit: (err) => { result.textContent = err ? 'EXIT WITH ERROR\n' + JSON.stringify(err, null, 2) : 'User exited before finishing.'; }
+        });
+        handler.open();
+      } catch (err) { result.textContent = 'Update link token request failed: ' + err.message; }
     });
   </script>
 </body>
