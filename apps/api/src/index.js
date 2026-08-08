@@ -5,8 +5,8 @@ const pool = require('./db');
 const plaidClient = require('./plaidClient');
 const { encrypt } = require('./crypto');
 const { requireAuth, requireInternalSecret, signup, login } = require('./auth');
-const { runSync } = require('./sync');
-const { getSummary, getAccounts, getTransactions } = require('./me');
+const { runSync, syncOneItem } = require('./sync');
+const { getSummary, getAccounts, getTransactions, getInsights } = require('./me');
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -30,6 +30,7 @@ app.post('/auth/login', login);
 app.get('/me/summary', requireAuth, getSummary);
 app.get('/me/accounts', requireAuth, getAccounts);
 app.get('/me/transactions', requireAuth, getTransactions);
+app.get('/me/insights', requireAuth, getInsights);
 
 app.post('/plaid/create-link-token', requireAuth, async (req, res) => {
   try {
@@ -73,7 +74,27 @@ app.post('/plaid/exchange-public-token', requireAuth, async (req, res) => {
         [plaidItemDbId, acct.account_id, acct.name, acct.type, acct.subtype, acct.mask]
       );
     }
-    res.json({ status: 'ok', plaid_item_id, accounts_stored: accountsRes.data.accounts.length });
+
+    // Immediate first sync — don't make the user wait up to 6 hours for the
+    // scheduled job to see their first real transactions. Failure here
+    // shouldn't break the response; the scheduled job will pick it up next run.
+    let immediateSyncResult = null;
+    try {
+      const freshItem = await pool.query(
+        'select id, plaid_item_id, plaid_access_token_encrypted, cursor from plaid_items where id = $1',
+        [plaidItemDbId]
+      );
+      immediateSyncResult = await syncOneItem(freshItem.rows[0]);
+    } catch (syncErr) {
+      console.error('Immediate post-link sync failed (non-fatal):', syncErr.message);
+    }
+
+    res.json({
+      status: 'ok',
+      plaid_item_id,
+      accounts_stored: accountsRes.data.accounts.length,
+      immediate_sync: immediateSyncResult,
+    });
   } catch (err) {
     const detail = err.response?.data || err.message;
     res.status(500).json({ status: 'error', detail });
