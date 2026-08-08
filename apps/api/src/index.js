@@ -2,8 +2,8 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const pool = require('./db');
-const plaidClient = require('./plaidClient');
-const { encrypt } = require('./crypto');
+const { plaidClient, PLAID_PRODUCTS } = require('./plaidClient');
+const { encrypt, decrypt } = require('./crypto');
 const { requireAuth, requireInternalSecret, signup, login } = require('./auth');
 const { runSync, syncOneItem } = require('./sync');
 const { getSummary, getAccounts, getTransactions, getInsights } = require('./me');
@@ -34,10 +34,47 @@ app.get('/me/insights', requireAuth, getInsights);
 
 app.post('/plaid/create-link-token', requireAuth, async (req, res) => {
   try {
+    const activeCount = await pool.query("select count(*) from plaid_items where status = 'active'");
+    const CAPACITY_LIMIT = 9; // stop at 9, not the hard 10, to leave headroom
+    if (Number(activeCount.rows[0].count) >= CAPACITY_LIMIT) {
+      return res.status(503).json({
+        status: 'error',
+        message: 'Shave is at capacity for new bank connections right now. Try again soon.',
+      });
+    }
     const response = await plaidClient.linkTokenCreate({
       user: { client_user_id: req.user.id },
       client_name: 'shave',
-      products: ['auth', 'transactions'],
+      products: PLAID_PRODUCTS,
+      country_codes: ['US'],
+      language: 'en',
+    });
+    res.json({ status: 'ok', link_token: response.data.link_token });
+  } catch (err) {
+    const detail = err.response?.data || err.message;
+    res.status(500).json({ status: 'error', detail });
+  }
+});
+
+// Update mode: lets an already-linked account re-consent to products it
+// didn't originally grant (e.g. your two existing test links, which only
+// have auth+transactions). Same Item, same access_token — just new consent.
+app.post('/plaid/create-update-link-token', requireAuth, async (req, res) => {
+  try {
+    const { plaid_item_id } = req.body;
+    const itemRow = await pool.query(
+      'select id, plaid_access_token_encrypted from plaid_items where plaid_item_id = $1 and user_id = $2',
+      [plaid_item_id, req.user.id]
+    );
+    if (itemRow.rows.length === 0) {
+      return res.status(404).json({ status: 'error', message: 'Item not found for this user' });
+    }
+    const accessToken = decrypt(itemRow.rows[0].plaid_access_token_encrypted);
+    const response = await plaidClient.linkTokenCreate({
+      user: { client_user_id: req.user.id },
+      client_name: 'shave',
+      access_token: accessToken,
+      additional_consented_products: ['liabilities', 'investments', 'identity'],
       country_codes: ['US'],
       language: 'en',
     });
@@ -75,9 +112,6 @@ app.post('/plaid/exchange-public-token', requireAuth, async (req, res) => {
       );
     }
 
-    // Immediate first sync — don't make the user wait up to 6 hours for the
-    // scheduled job to see their first real transactions. Failure here
-    // shouldn't break the response; the scheduled job will pick it up next run.
     let immediateSyncResult = null;
     try {
       const freshItem = await pool.query(
@@ -98,6 +132,26 @@ app.post('/plaid/exchange-public-token', requireAuth, async (req, res) => {
   } catch (err) {
     const detail = err.response?.data || err.message;
     res.status(500).json({ status: 'error', detail });
+  }
+});
+
+// Called after a successful update-mode Link session — no new public_token
+// to exchange (access_token didn't change), just re-run sync so the newly
+// consented products (Liabilities/Investments/Identity) populate immediately.
+app.post('/plaid/resync-after-update', requireAuth, async (req, res) => {
+  try {
+    const { plaid_item_id } = req.body;
+    const itemRow = await pool.query(
+      'select id, plaid_item_id, plaid_access_token_encrypted, cursor from plaid_items where plaid_item_id = $1 and user_id = $2',
+      [plaid_item_id, req.user.id]
+    );
+    if (itemRow.rows.length === 0) {
+      return res.status(404).json({ status: 'error', message: 'Item not found for this user' });
+    }
+    const result = await syncOneItem(itemRow.rows[0]);
+    res.json({ status: 'ok', result });
+  } catch (err) {
+    res.status(500).json({ status: 'error', message: err.message });
   }
 });
 
