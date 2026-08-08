@@ -1,0 +1,16 @@
+name: Scheduled Plaid sync
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"   # every 6 hours
+  workflow_dispatch: {}       # lets you trigger it manually from the Actions tab
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger sync
+        run: |
+          curl -sf -X POST "${{ secrets.API_BASE_URL }}/internal/sync/run" \
+            -H "x-internal-secret: ${{ secrets.INTERNAL_SECRET }}" \
+            --max-time 90
