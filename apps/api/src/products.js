@@ -1,9 +1,34 @@
+const pool = require('./db');
+const plaidClient = require('./plaidClient').plaidClient;
+
+async function syncBalance(accessToken, acctMap) {
+  const response = await plaidClient.accountsBalanceGet({ access_token: accessToken });
+  for (const acct of response.data.accounts) {
+    const accountId = acctMap[acct.account_id];
+    if (!accountId) continue;
+    await pool.query(
+      `update accounts set
+         current_balance = $1, available_balance = $2,
+         balance_iso_currency_code = $3, balance_updated_at = now()
+       where id = $4`,
+      [
+        acct.balances.current,
+        acct.balances.available,
+        acct.balances.iso_currency_code || 'USD',
+        accountId,
+      ]
+    );
+  }
+}
+
 async function syncLiabilities(accessToken, acctMap) {
   let data;
   try {
     const response = await plaidClient.liabilitiesGet({ access_token: accessToken });
     data = response.data.liabilities;
   } catch (err) {
+    // Not every linked account type returns liabilities data — Plaid errors
+    // on that rather than returning empty. Treat as "nothing to sync."
     return;
   }
   if (!data) return;
@@ -89,3 +114,57 @@ async function syncLiabilities(accessToken, acctMap) {
     );
   }
 }
+
+async function syncInvestments(accessToken, acctMap) {
+  let data;
+  try {
+    const response = await plaidClient.investmentsHoldingsGet({ access_token: accessToken });
+    data = response.data;
+  } catch (err) {
+    return; // Item has no investment accounts — expected, not an error.
+  }
+  const securitiesById = {};
+  for (const sec of data.securities || []) securitiesById[sec.security_id] = sec;
+
+  for (const holding of data.holdings || []) {
+    const accountId = acctMap[holding.account_id];
+    if (!accountId) continue;
+    const security = securitiesById[holding.security_id] || {};
+    await pool.query(
+      `insert into investment_holdings
+        (account_id, security_id, security_name, ticker_symbol, security_type,
+         quantity, institution_price, institution_value, cost_basis, iso_currency_code, updated_at)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, now())
+       on conflict (account_id, security_id) do update set
+         security_name = excluded.security_name, ticker_symbol = excluded.ticker_symbol,
+         security_type = excluded.security_type, quantity = excluded.quantity,
+         institution_price = excluded.institution_price, institution_value = excluded.institution_value,
+         cost_basis = excluded.cost_basis, iso_currency_code = excluded.iso_currency_code, updated_at = now()`,
+      [
+        accountId, holding.security_id, security.name || null, security.ticker_symbol || null,
+        security.type || null, holding.quantity, holding.institution_price,
+        holding.institution_value, holding.cost_basis, holding.iso_currency_code || 'USD',
+      ]
+    );
+  }
+}
+
+async function syncIdentity(accessToken, plaidItemDbId, acctMap) {
+  let data;
+  try {
+    const response = await plaidClient.identityGet({ access_token: accessToken });
+    data = response.data.accounts;
+  } catch (err) {
+    return;
+  }
+  for (const acct of data || []) {
+    const accountId = acctMap[acct.account_id];
+    if (!accountId) continue;
+    const owner = (acct.owners && acct.owners[0]) || {};
+    await pool.query(
+      `insert into identity_data (plaid_item_id, account_id, names, emails, phone_numbers, addresses, updated_at)
+       values ($1,$2,$3,$4,$5,$6, now())
+       on conflict (account_id) do update set
+         names = excluded.names, emails = excluded.emails,
+         phone_numbers = excluded.phone_numbers, addresses = excluded.addresses, updated_at = now()`,
+      [
