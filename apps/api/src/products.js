@@ -27,6 +27,8 @@ async function syncLiabilities(accessToken, acctMap) {
     const response = await plaidClient.liabilitiesGet({ access_token: accessToken });
     data = response.data.liabilities;
   } catch (err) {
+    // Not every linked account type returns liabilities data — Plaid errors
+    // on that rather than returning empty. Treat as "nothing to sync."
     return;
   }
   if (!data) return;
@@ -64,8 +66,8 @@ async function syncLiabilities(accessToken, acctMap) {
         (account_id, loan_name, is_overdue, guarantor, interest_rate_percentage,
          minimum_payment_amount, next_payment_due_date, expected_payoff_date,
          last_statement_issue_date, origination_principal_amount,
-         outstanding_interest_amount, servicer_address, disbursement_dates, updated_at)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, now())
+         outstanding_interest_amount, disbursement_dates, updated_at)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, now())
        on conflict (account_id) do update set
          loan_name = excluded.loan_name, is_overdue = excluded.is_overdue,
          guarantor = excluded.guarantor,
@@ -76,16 +78,13 @@ async function syncLiabilities(accessToken, acctMap) {
          last_statement_issue_date = excluded.last_statement_issue_date,
          origination_principal_amount = excluded.origination_principal_amount,
          outstanding_interest_amount = excluded.outstanding_interest_amount,
-         servicer_address = excluded.servicer_address,
          disbursement_dates = excluded.disbursement_dates, updated_at = now()`,
       [
         accountId, student.loan_name, student.is_overdue, student.guarantor,
         student.interest_rate_percentage, student.minimum_payment_amount,
         student.next_payment_due_date, student.expected_payoff_date,
         student.last_statement_issue_date, student.origination_principal_amount,
-        student.outstanding_interest_amount,
-        JSON.stringify(student.servicer_address || {}),
-        JSON.stringify(student.disbursement_dates || []),
+        student.outstanding_interest_amount, JSON.stringify(student.disbursement_dates || []),
       ]
     );
   }
@@ -123,7 +122,7 @@ async function syncInvestments(accessToken, acctMap) {
     const response = await plaidClient.investmentsHoldingsGet({ access_token: accessToken });
     data = response.data;
   } catch (err) {
-    return;
+    return; // Item has no investment accounts — expected, not an error.
   }
   const securitiesById = {};
   for (const sec of data.securities || []) securitiesById[sec.security_id] = sec;
