@@ -19,7 +19,8 @@ async function getSummary(req, res) {
 
 async function getAccounts(req, res) {
   const result = await pool.query(
-    `select a.id, a.name, a.type, a.subtype, a.mask, pi.institution_name
+    `select a.id, a.name, a.type, a.subtype, a.mask, pi.institution_name,
+            a.current_balance, a.available_balance, a.balance_iso_currency_code, a.balance_updated_at
      from accounts a
      join plaid_items pi on pi.id = a.plaid_item_id
      where pi.user_id = $1
@@ -71,8 +72,6 @@ async function getInsights(req, res) {
     [userId]
   );
 
-  // FIX: pull total and count from the same unfiltered query, so the average
-  // isn't silently computed over only the top-5-category subset.
   const overall = await pool.query(
     `select coalesce(sum(r.roundup_amount), 0) as total,
             count(*) as txn_count,
@@ -88,8 +87,6 @@ async function getInsights(req, res) {
   const { total, txn_count, first_date } = overall.rows[0];
   const daysActive = first_date ? Math.max(1, Math.ceil((Date.now() - new Date(first_date)) / 86400000)) : 0;
 
-  // FIX: don't project a full year from a handful of days of data — a single
-  // big early month would wildly overstate the annual number.
   const MIN_DAYS_FOR_PROJECTION = 30;
   const projected_annual = daysActive >= MIN_DAYS_FOR_PROJECTION
     ? Math.round((Number(total) / daysActive) * 365 * 100) / 100
@@ -106,4 +103,123 @@ async function getInsights(req, res) {
   });
 }
 
-module.exports = { getSummary, getAccounts, getTransactions, getInsights };
+async function getNetWorth(req, res) {
+  const userId = req.user.id;
+
+  const accounts = await pool.query(
+    `select a.id, a.name, a.type, a.subtype, a.current_balance, a.available_balance, a.balance_updated_at
+     from accounts a
+     join plaid_items pi on pi.id = a.plaid_item_id
+     where pi.user_id = $1`,
+    [userId]
+  );
+
+  const creditLiabilities = await pool.query(
+    `select lc.account_id, lc.aprs, lc.is_overdue, lc.minimum_payment_amount,
+            lc.next_payment_due_date, a.current_balance, a.name
+     from liabilities_credit lc
+     join accounts a on a.id = lc.account_id
+     join plaid_items pi on pi.id = a.plaid_item_id
+     where pi.user_id = $1`,
+    [userId]
+  );
+
+  const studentLiabilities = await pool.query(
+    `select ls.account_id, ls.interest_rate_percentage, ls.is_overdue,
+            ls.minimum_payment_amount, ls.next_payment_due_date, a.current_balance, a.name
+     from liabilities_student ls
+     join accounts a on a.id = ls.account_id
+     join plaid_items pi on pi.id = a.plaid_item_id
+     where pi.user_id = $1`,
+    [userId]
+  );
+
+  const mortgageLiabilities = await pool.query(
+    `select lm.account_id, lm.interest_rate_percentage, lm.next_payment_due_date,
+            lm.next_monthly_payment, a.current_balance, a.name
+     from liabilities_mortgage lm
+     join accounts a on a.id = lm.account_id
+     join plaid_items pi on pi.id = a.plaid_item_id
+     where pi.user_id = $1`,
+    [userId]
+  );
+
+  const investments = await pool.query(
+    `select ih.account_id, a.name, sum(ih.institution_value) as account_value
+     from investment_holdings ih
+     join accounts a on a.id = ih.account_id
+     join plaid_items pi on pi.id = a.plaid_item_id
+     where pi.user_id = $1
+     group by ih.account_id, a.name`,
+    [userId]
+  );
+
+  let totalCash = 0, totalDebt = 0, totalInvestments = 0;
+  for (const a of accounts.rows) {
+    const bal = Number(a.current_balance) || 0;
+    if (a.type === 'depository') totalCash += bal;
+    if (a.type === 'credit' || a.type === 'loan') totalDebt += bal;
+  }
+  for (const inv of investments.rows) totalInvestments += Number(inv.account_value) || 0;
+
+  const debtItems = [];
+  for (const c of creditLiabilities.rows) {
+    const aprs = c.aprs || [];
+    const purchaseApr = aprs.find(a => a.apr_type === 'purchase_apr');
+    debtItems.push({
+      name: c.name, kind: 'credit_card', balance: Number(c.current_balance) || 0,
+      rate: purchaseApr ? Number(purchaseApr.apr_percentage) : null,
+      is_overdue: c.is_overdue, minimum_payment: c.minimum_payment_amount,
+      next_payment_due_date: c.next_payment_due_date,
+    });
+  }
+  for (const s of studentLiabilities.rows) {
+    debtItems.push({
+      name: s.name, kind: 'student_loan', balance: Number(s.current_balance) || 0,
+      rate: s.interest_rate_percentage !== null ? Number(s.interest_rate_percentage) : null,
+      is_overdue: s.is_overdue, minimum_payment: s.minimum_payment_amount,
+      next_payment_due_date: s.next_payment_due_date,
+    });
+  }
+  for (const m of mortgageLiabilities.rows) {
+    debtItems.push({
+      name: m.name, kind: 'mortgage', balance: Number(m.current_balance) || 0,
+      rate: m.interest_rate_percentage !== null ? Number(m.interest_rate_percentage) : null,
+      is_overdue: null, minimum_payment: m.next_monthly_payment,
+      next_payment_due_date: m.next_payment_due_date,
+    });
+  }
+
+  let weightedRateSum = 0, rateWeightBalance = 0;
+  for (const d of debtItems) {
+    if (d.rate !== null && d.balance > 0) {
+      weightedRateSum += d.rate * d.balance;
+      rateWeightBalance += d.balance;
+    }
+  }
+  const blendedApr = rateWeightBalance > 0 ? Math.round((weightedRateSum / rateWeightBalance) * 100) / 100 : null;
+
+  const highestRateDebt = debtItems
+    .filter(d => d.rate !== null && d.balance > 0)
+    .sort((a, b) => b.rate - a.rate)[0] || null;
+
+  res.json({
+    status: 'ok',
+    total_cash: Math.round(totalCash * 100) / 100,
+    total_debt: Math.round(totalDebt * 100) / 100,
+    total_investments: Math.round(totalInvestments * 100) / 100,
+    net_worth: Math.round((totalCash + totalInvestments - totalDebt) * 100) / 100,
+    blended_debt_rate: blendedApr,
+    highest_rate_debt: highestRateDebt,
+    debt_items: debtItems,
+    investment_accounts: investments.rows.map(i => ({
+      account_id: i.account_id, name: i.name, value: Math.round(Number(i.account_value) * 100) / 100,
+    })),
+    data_completeness: {
+      has_any_liability_data: debtItems.length > 0,
+      has_any_investment_data: investments.rows.length > 0,
+    },
+  });
+}
+
+module.exports = { getSummary, getAccounts, getTransactions, getInsights, getNetWorth };
