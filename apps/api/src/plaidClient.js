@@ -1,7 +1,6 @@
 const { Configuration, PlaidApi, PlaidEnvironments } = require('plaid');
 
 const env = process.env.PLAID_ENV || 'sandbox';
-
 const configuration = new Configuration({
   basePath: PlaidEnvironments[env],
   baseOptions: {
@@ -14,4 +13,9 @@ const configuration = new Configuration({
 
 const plaidClient = new PlaidApi(configuration);
 
-module.exports = plaidClient;
+// Single source of truth for which products we request. Balance isn't listed
+// here deliberately — it's not a Link-time product, it's a per-request call
+// (/accounts/balance/get) made after an Item already exists.
+const PLAID_PRODUCTS = ['auth', 'transactions', 'liabilities', 'investments', 'identity'];
+
+module.exports = { plaidClient, PLAID_PRODUCTS };
