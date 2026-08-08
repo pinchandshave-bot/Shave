@@ -6,6 +6,7 @@ const plaidClient = require('./plaidClient');
 const { encrypt } = require('./crypto');
 const { requireAuth, requireInternalSecret, signup, login } = require('./auth');
 const { runSync } = require('./sync');
+const { getSummary, getAccounts, getTransactions } = require('./me');
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -25,6 +26,10 @@ app.get('/db-check', async (req, res) => {
 
 app.post('/auth/signup', signup);
 app.post('/auth/login', login);
+
+app.get('/me/summary', requireAuth, getSummary);
+app.get('/me/accounts', requireAuth, getAccounts);
+app.get('/me/transactions', requireAuth, getTransactions);
 
 app.post('/plaid/create-link-token', requireAuth, async (req, res) => {
   try {
