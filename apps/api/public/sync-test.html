@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>shave — internal sync test</title>
+</head>
+<body style="font-family: sans-serif; padding: 20px; max-width: 480px;">
+<h2>Internal Sync Test</h2>
+<p style="color:#666; font-size:14px;">Same-origin page — no CORS issue here. First request after idle time can take up to 60 seconds while the free server wakes up.</p>
+<input id="secret" type="password" placeholder="x-internal-secret value" style="display:block; margin-bottom:8px; width:100%; padding:8px;">
+<button id="run-btn">Run sync</button>
+<pre id="result" style="background:#eee; padding:10px; margin-top:20px; white-space:pre-wrap;"></pre>
+<script>
+document.getElementById('run-btn').addEventListener('click', async () => {
+  const result = document.getElementById('result');
+  const secret = document.getElementById('secret').value;
+  if (!secret) { result.textContent = 'Enter the secret first.'; return; }
+  result.textContent = 'Running... (may take up to 60s if the server was asleep)';
+  try {
+    const res = await fetch('/internal/sync/run', {
+      method: 'POST',
+      headers: { 'x-internal-secret': secret },
+    });
+    const data = await res.json();
+    result.textContent = 'Status: ' + res.status + '\n' + JSON.stringify(data, null, 2);
+  } catch (err) {
+    result.textContent = 'Request failed: ' + err.message;
+  }
+});
+</script>
+</body>
+</html>
