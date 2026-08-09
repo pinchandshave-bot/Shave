@@ -224,35 +224,24 @@ async function getNetWorth(req, res) {
 }
 
 async function getIncome(req, res) {
-  const result = await pool.query(
-    `select source_merchant, detected_cadence, average_amount, reliability_score,
-            last_detected_date, next_expected_date, computed_at
+  const userId = req.user.id;
+
+  const signalResult = await pool.query(
+    `select detected_cadence, average_amount, reliability_score, computed_at
      from income_signals
      where user_id = $1
      order by computed_at desc
-     limit 6`,
-    [req.user.id]
+     limit 1`,
+    [userId]
   );
-  const rows = result.rows;
+
+  const runway = await computeCashflowRunway(userId);
+
   res.json({
     status: 'ok',
-    current: rows[0] || null,
-    history: rows.slice(1),
+    income_signal: signalResult.rows[0] || null,
+    cashflow: runway,
   });
 }
 
-async function getCashFlow(req, res) {
-  const runway = await computeCashflowRunway(req.user.id);
-  const incomeRes = await pool.query(
-    `select next_expected_date from income_signals
-     where user_id = $1 order by computed_at desc limit 1`,
-    [req.user.id]
-  );
-  res.json({
-    status: 'ok',
-    ...runway,
-    next_expected_income_date: incomeRes.rows[0]?.next_expected_date || null,
-  });
-}
-
-module.exports = { getSummary, getAccounts, getTransactions, getInsights, getNetWorth, getIncome, getCashFlow };
+module.exports = { getSummary, getAccounts, getTransactions, getInsights, getNetWorth, getIncome };
