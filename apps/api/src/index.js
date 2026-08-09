@@ -1,16 +1,26 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const rateLimit = require('express-rate-limit');
 const pool = require('./db');
 const { plaidClient, PLAID_PRODUCTS } = require('./plaidClient');
 const { encrypt, decrypt } = require('./crypto');
 const { requireAuth, requireInternalSecret, signup, login } = require('./auth');
 const { runSync, syncOneItem } = require('./sync');
-const { getSummary, getAccounts, getTransactions, getInsights } = require('./me');
+const { getSummary, getAccounts, getTransactions, getInsights, getNetWorth, getIncome, getCashFlow } = require('./me');
+
 const app = express();
-app.use(cors());
+app.use(cors({ origin: process.env.FRONTEND_ORIGIN || 'https://shave.onrender.com' }));
 app.use(express.json());
 app.use(express.static('public'));
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 8,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { status: 'error', message: 'Too many attempts. Try again later.' },
+});
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'shave-api', time: new Date().toISOString() });
@@ -24,13 +34,16 @@ app.get('/db-check', async (req, res) => {
   }
 });
 
-app.post('/auth/signup', signup);
-app.post('/auth/login', login);
+app.post('/auth/signup', authLimiter, signup);
+app.post('/auth/login', authLimiter, login);
 
 app.get('/me/summary', requireAuth, getSummary);
 app.get('/me/accounts', requireAuth, getAccounts);
 app.get('/me/transactions', requireAuth, getTransactions);
 app.get('/me/insights', requireAuth, getInsights);
+app.get('/me/net-worth', requireAuth, getNetWorth);
+app.get('/me/income', requireAuth, getIncome);
+app.get('/me/cash-flow', requireAuth, getCashFlow);
 
 app.post('/plaid/create-link-token', requireAuth, async (req, res) => {
   try {
@@ -156,6 +169,19 @@ app.post('/plaid/resync-after-update', requireAuth, async (req, res) => {
 });
 
 app.post('/internal/sync/run', requireInternalSecret, runSync);
+
+// Catch-all for unmatched routes — returns JSON instead of Express's default
+// HTML error page, consistent with every other response this API sends.
+app.use((req, res) => {
+  res.status(404).json({ status: 'error', message: 'Not found' });
+});
+
+// Last-resort error handler — catches anything an individual route's own
+// try/catch missed, so a bug never leaks a stack trace to the client.
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err);
+  res.status(500).json({ status: 'error', message: 'Internal server error' });
+});
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
