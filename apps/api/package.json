@@ -15,6 +15,7 @@
     "cors": "^2.8.5",
     "plaid": "^45.0.0",
     "bcrypt": "^6.0.0",
-    "jsonwebtoken": "^9.0.3"
+    "jsonwebtoken": "^9.0.3",
+    "express-rate-limit": "^7.4.1"
   }
 }
