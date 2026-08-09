@@ -12,11 +12,6 @@ function stddev(arr, mean) {
   return Math.sqrt(variance);
 }
 
-// Deliberately coarse: weekly, biweekly (also covers true semimonthly —
-// distinguishing "every 14 days" from "1st and 15th of the month" reliably
-// needs day-of-month analysis, not just gap length, and this simpler
-// classifier doesn't attempt that distinction rather than fake precision
-// it can't back up), monthly, or irregular.
 function classifyCadence(medianGapDays) {
   if (medianGapDays >= 5 && medianGapDays <= 9) return 'weekly';
   if (medianGapDays >= 12 && medianGapDays <= 17) return 'biweekly';
@@ -24,11 +19,6 @@ function classifyCadence(medianGapDays) {
   return 'irregular';
 }
 
-// Groups the user's deposits (negative amount, Plaid's convention for money
-// coming in) by merchant_name where available — the most reliable signal for
-// payroll ("ACME CORP PAYROLL", "GUSTO", etc.) — then looks for a repeating
-// pattern within each group. Requires at least 3 occurrences before calling
-// anything a pattern; two matching deposits could easily be coincidence.
 async function computeIncomeSignals(userId) {
   const result = await pool.query(
     `select t.merchant_name, t.amount, t.posted_date
@@ -40,16 +30,21 @@ async function computeIncomeSignals(userId) {
     [userId]
   );
 
+  // Group by merchant_name when present; direct deposits often lack it
+  // (a real, documented Plaid fill-rate gap), so fall back to grouping by
+  // rounded amount for those rather than dropping them entirely.
   const groups = {};
   for (const txn of result.rows) {
-    const key = txn.merchant_name || 'unlabeled';
-    if (!groups[key]) groups[key] = [];
-    groups[key].push(txn);
+    const amount = Math.abs(Number(txn.amount));
+    const key = txn.merchant_name || `amt:${Math.round(amount)}`;
+    if (!groups[key]) groups[key] = { label: txn.merchant_name || null, txns: [] };
+    groups[key].txns.push(txn);
   }
 
   let best = null;
-  for (const [merchant, txns] of Object.entries(groups)) {
-    if (merchant === 'unlabeled' || txns.length < 3) continue;
+  for (const [key, group] of Object.entries(groups)) {
+    const txns = group.txns;
+    if (txns.length < 3) continue;
 
     const dates = txns.map(t => new Date(t.posted_date).getTime());
     const gaps = [];
@@ -61,29 +56,41 @@ async function computeIncomeSignals(userId) {
     const gapStddev = stddev(gaps, gapMean);
     const reliability = gapMean > 0 ? Math.max(0, Math.min(1, 1 - gapStddev / gapMean)) : 0;
 
-    const amounts = txns.map(t => Math.abs(Number(t.amount)));
-    const avgAmount = amounts.reduce((a, b) => a + b, 0) / amounts.length;
     const cadence = classifyCadence(gapMedian);
+    if (cadence === 'irregular') continue; // not a real income signal — don't store it as one
+
+    const amounts = txns.map(t => Math.abs(Number(t.amount)));
+    const avgAmount = median(amounts); // resistant to one outlier deposit skewing the number
+    const lastDate = new Date(dates[dates.length - 1]);
+    const nextExpectedDate = new Date(lastDate.getTime() + gapMedian * 86400000);
 
     if (!best || txns.length > best.occurrences) {
-      best = { cadence, avgAmount, reliability, occurrences: txns.length };
+      best = {
+        sourceLabel: group.label || key,
+        cadence, avgAmount, reliability,
+        occurrences: txns.length,
+        lastDate, nextExpectedDate,
+      };
     }
   }
 
   if (best) {
     await pool.query(
-      `insert into income_signals (user_id, detected_cadence, average_amount, reliability_score)
-       values ($1, $2, $3, $4)`,
-      [userId, best.cadence, Math.round(best.avgAmount * 100) / 100, Math.round(best.reliability * 100) / 100]
+      `insert into income_signals
+        (user_id, detected_cadence, average_amount, reliability_score,
+         source_merchant, last_detected_date, next_expected_date)
+       values ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        userId, best.cadence, Math.round(best.avgAmount * 100) / 100,
+        Math.round(best.reliability * 100) / 100, best.sourceLabel,
+        best.lastDate.toISOString().slice(0, 10),
+        best.nextExpectedDate.toISOString().slice(0, 10),
+      ]
     );
   }
   return best;
 }
 
-// "Safe to spend" runway: at the current net daily pace (last 30 days of
-// real transactions), how many days until cash balance reaches zero.
-// Returns null (not a fabricated number) when cash flow is net-positive —
-// "declining toward zero" isn't a meaningful question if it isn't declining.
 async function computeCashflowRunway(userId) {
   const cashResult = await pool.query(
     `select coalesce(sum(a.current_balance), 0) as total_cash
