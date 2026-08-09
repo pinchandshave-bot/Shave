@@ -3,6 +3,7 @@ const plaidClient = require('./plaidClient').plaidClient;
 const { decrypt } = require('./crypto');
 const { calculateRoundup } = require('./roundup');
 const { syncBalance, syncLiabilities, syncInvestments, syncIdentity } = require('./products');
+const { computeIncomeSignals } = require('./intelligence');
 
 async function syncOneItem(item) {
   const runInsert = await pool.query(
@@ -70,6 +71,15 @@ async function syncOneItem(item) {
     await syncLiabilities(accessToken, acctMap);
     await syncInvestments(accessToken, acctMap);
     await syncIdentity(accessToken, item.id, acctMap);
+
+    // Income-signal detection runs off the transactions/balance data just
+    // synced above. Wrapped separately so a failure here degrades gracefully
+    // instead of marking the whole sync run as failed.
+    try {
+      await computeIncomeSignals(userId);
+    } catch (intelErr) {
+      console.error('Income signal computation failed for user', userId, intelErr.message);
+    }
 
     await pool.query(
       "update sync_runs set finished_at = now(), added_count = $1, status = 'success' where id = $2",
