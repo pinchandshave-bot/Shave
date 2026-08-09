@@ -35,6 +35,7 @@ async function syncOneItem(item) {
     for (const a of acctRows.rows) acctMap[a.plaid_account_id] = a.id;
     const userRow = await pool.query('select user_id from plaid_items where id = $1', [item.id]);
     const userId = userRow.rows[0].user_id;
+
     let syncedCount = 0;
     for (const txn of [...added, ...modified]) {
       const accountId = acctMap[txn.account_id];
@@ -53,28 +54,54 @@ async function syncOneItem(item) {
         ]
       );
       syncedCount++;
+      const txnDbId = txnInsert.rows[0].id;
       const roundup = calculateRoundup(Number(txn.amount));
+
       if (roundup > 0) {
+        // Option B: keep the roundup in sync with the transaction's amount.
+        // A pending charge's amount routinely changes once it posts (tips,
+        // pump pre-auths, etc.) — this updates the roundup to match rather
+        // than freezing it at the first-seen amount.
         await pool.query(
           `insert into roundup_events (user_id, transaction_id, roundup_amount)
-           values ($1, $2, $3) on conflict (transaction_id) do nothing`,
-          [userId, txnInsert.rows[0].id, roundup]
+           values ($1, $2, $3)
+           on conflict (transaction_id) do update set roundup_amount = excluded.roundup_amount`,
+          [userId, txnDbId, roundup]
         );
+      } else {
+        // The transaction's amount changed such that it's no longer
+        // roundup-eligible (e.g. corrected to a refund, or crossed the
+        // rent-sized threshold). If an earlier pass created a roundup
+        // event for it, that's now stale and needs to go — otherwise a
+        // corrected transaction leaves phantom savings behind.
+        await pool.query('delete from roundup_events where transaction_id = $1', [txnDbId]);
       }
     }
+
+    // Plaid explicitly tells us which transactions no longer exist (a
+    // pending charge that got cancelled before posting, a duplicate Plaid
+    // itself retracted). Previously collected into `removed` and never
+    // acted on — that let cancelled transactions, and any roundup counted
+    // against them, sit in the database indefinitely.
+    for (const rem of removed) {
+      const existing = await pool.query(
+        'select id from transactions where plaid_transaction_id = $1',
+        [rem.transaction_id]
+      );
+      if (existing.rows.length > 0) {
+        const removedId = existing.rows[0].id;
+        await pool.query('delete from roundup_events where transaction_id = $1', [removedId]);
+        await pool.query('delete from transactions where id = $1', [removedId]);
+      }
+    }
+
     await pool.query('update plaid_items set cursor = $1 where id = $2', [cursor, item.id]);
 
-    // Fetch the four additional products. Each is independently wrapped
-    // upstream in products.js so one failing (e.g. a checking-only account
-    // with no liabilities) never blocks the others or the core sync above.
     await syncBalance(accessToken, acctMap);
     await syncLiabilities(accessToken, acctMap);
     await syncInvestments(accessToken, acctMap);
     await syncIdentity(accessToken, item.id, acctMap);
 
-    // Income-signal detection runs off the transactions/balance data just
-    // synced above. Wrapped separately so a failure here degrades gracefully
-    // instead of marking the whole sync run as failed.
     try {
       await computeIncomeSignals(userId);
     } catch (intelErr) {
@@ -85,7 +112,7 @@ async function syncOneItem(item) {
       "update sync_runs set finished_at = now(), added_count = $1, status = 'success' where id = $2",
       [syncedCount, runId]
     );
-    return { plaid_item_id: item.plaid_item_id, transactions_synced: syncedCount };
+    return { plaid_item_id: item.plaid_item_id, transactions_synced: syncedCount, removed_count: removed.length };
   } catch (err) {
     const message = err.response?.data?.error_message || err.message;
     await pool.query(
