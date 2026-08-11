@@ -38,19 +38,19 @@ export default function StartPage() {
             </div>
 
             <div className="space-y-3">
-              <button
-                type="button"
-                className="w-full rounded-full bg-black px-6 py-4 text-base font-medium text-white transition hover:bg-black/80"
+              <Link
+                href="/start/create"
+                className="block w-full rounded-full bg-black px-6 py-4 text-center text-base font-medium text-white transition hover:bg-black/80"
               >
                 Create your iBag
-              </button>
+              </Link>
 
-              <button
-                type="button"
-                className="w-full rounded-full border border-black/15 px-6 py-4 text-base font-medium transition hover:bg-black/[0.03]"
+              <Link
+                href="/start/signin"
+                className="block w-full rounded-full border border-black/15 px-6 py-4 text-center text-base font-medium transition hover:bg-black/[0.03]"
               >
                 Sign in
-              </button>
+              </Link>
             </div>
 
             <p className="mt-8 text-center text-xs leading-5 text-black/40">
