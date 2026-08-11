@@ -38,11 +38,17 @@ export default function StartPage() {
             </div>
 
             <div className="space-y-3">
-              <button className="w-full rounded-full bg-black px-6 py-4 text-base font-medium text-white transition hover:bg-black/80">
+              <button
+                type="button"
+                className="w-full rounded-full bg-black px-6 py-4 text-base font-medium text-white transition hover:bg-black/80"
+              >
                 Create your iBag
               </button>
 
-              <button className="w-full rounded-full border border-black/15 px-6 py-4 text-base font-medium transition hover:bg-black/[0.03]">
+              <button
+                type="button"
+                className="w-full rounded-full border border-black/15 px-6 py-4 text-base font-medium transition hover:bg-black/[0.03]"
+              >
                 Sign in
               </button>
             </div>
