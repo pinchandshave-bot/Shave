@@ -54,12 +54,22 @@ export default function CreatePage() {
         }
       );
 
-      const data = await response.json().catch(() => null);
+      const responseText = await response.text();
+
+      let data: any = null;
+
+      try {
+        data = JSON.parse(responseText);
+      } catch {
+        data = null;
+      }
 
       if (!response.ok) {
         setError(
           data?.message ||
-            "We couldn't create your iBag right now. Please try again."
+            "The server returned an error while creating your iBag. HTTP " +
+              response.status +
+              "."
         );
         return;
       }
@@ -71,7 +81,7 @@ export default function CreatePage() {
         !data?.ibag?.id
       ) {
         setError(
-          "Your account could not be completed because the server returned an unexpected response."
+          "The server responded, but the account creation response was incomplete."
         );
         return;
       }
@@ -96,9 +106,11 @@ export default function CreatePage() {
       );
 
       router.push("/start/connect");
-    } catch {
+    } catch (err) {
+      console.error("iBag signup request failed:", err);
+
       setError(
-        "We couldn't reach iBag right now. Check your connection and try again."
+        "The browser could not reach the iBag API. This is usually a connection or CORS configuration problem."
       );
     } finally {
       setIsSubmitting(false);
