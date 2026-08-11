@@ -60,12 +60,17 @@ export default function CreatePage() {
       }
 
       if (!data?.token || !data?.user?.id) {
-        setError("Your account was not created correctly. Please try again.");
+        setError(
+          "Your account was not created correctly. Please try again."
+        );
         return;
       }
 
       sessionStorage.setItem("ibag_token", data.token);
-      sessionStorage.setItem("ibag_user", JSON.stringify(data.user));
+      sessionStorage.setItem(
+        "ibag_user",
+        JSON.stringify(data.user)
+      );
 
       router.push("/start/connect");
     } catch {
