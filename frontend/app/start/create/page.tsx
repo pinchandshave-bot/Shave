@@ -1,4 +1,3 @@
-```tsx
 "use client";
 
 import Link from "next/link";
@@ -13,7 +12,6 @@ export default function CreatePage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
-
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -42,16 +40,19 @@ export default function CreatePage() {
     setIsSubmitting(true);
 
     try {
-      const response = await fetch(`${API_URL}/auth/signup`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          email: normalizedEmail,
-          password,
-        }),
-      });
+      const response = await fetch(
+        API_URL + "/auth/signup",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            email: normalizedEmail,
+            password: password,
+          }),
+        }
+      );
 
       const data = await response.json().catch(() => null);
 
@@ -75,10 +76,6 @@ export default function CreatePage() {
         return;
       }
 
-      /*
-       * The existing API authenticates with a JWT returned by /auth/signup.
-       * Store only the authentication data needed by the frontend.
-       */
       localStorage.setItem("ibag_token", data.token);
 
       localStorage.setItem(
@@ -98,11 +95,6 @@ export default function CreatePage() {
         })
       );
 
-      /*
-       * Account creation is complete.
-       * The next screen should handle the user's authenticated
-       * onboarding and financial-account connection decision.
-       */
       router.push("/start/connect");
     } catch {
       setError(
@@ -196,7 +188,7 @@ export default function CreatePage() {
 
                     <button
                       type="button"
-                      onClick={() => setShowPassword((value) => !value)}
+                      onClick={() => setShowPassword(!showPassword)}
                       disabled={isSubmitting}
                       className="absolute right-4 top-1/2 -translate-y-1/2 text-sm font-medium text-black/50 transition hover:text-black disabled:cursor-not-allowed disabled:opacity-50"
                     >
@@ -224,7 +216,9 @@ export default function CreatePage() {
                 disabled={isSubmitting}
                 className="mt-7 w-full rounded-full bg-black px-6 py-4 text-base font-medium text-white transition hover:bg-black/80 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {isSubmitting ? "Creating your iBag…" : "Create your iBag"}
+                {isSubmitting
+                  ? "Creating your iBag..."
+                  : "Create your iBag"}
               </button>
             </form>
 
@@ -250,4 +244,3 @@ export default function CreatePage() {
     </main>
   );
 }
-```
