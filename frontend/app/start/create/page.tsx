@@ -1,4 +1,3 @@
-```tsx
 import Link from "next/link";
 
 export default function CreatePage() {
@@ -37,33 +36,25 @@ export default function CreatePage() {
               </p>
             </div>
 
-            <div>
-              <label
-                htmlFor="name"
-                className="mb-2 block text-sm font-medium"
-              >
-                What should we call you?
-              </label>
-
-              <input
-                id="name"
-                name="name"
-                type="text"
-                autoComplete="name"
-                placeholder="Your name"
-                className="w-full rounded-2xl border border-black/15 bg-white px-5 py-4 text-base outline-none transition placeholder:text-black/30 focus:border-black/40"
-              />
-
-              <button
-                type="button"
-                className="mt-4 w-full rounded-full bg-black px-6 py-4 text-base font-medium text-white transition hover:bg-black/80"
+            <div className="space-y-3">
+              <Link
+                href="/start"
+                className="block w-full rounded-full bg-black px-6 py-4 text-center text-base font-medium text-white transition hover:bg-black/80"
               >
                 Continue
-              </button>
+              </Link>
+
+              <Link
+                href="/start"
+                className="block w-full rounded-full border border-black/15 px-6 py-4 text-center text-base font-medium transition hover:bg-black/[0.03]"
+              >
+                Back
+              </Link>
             </div>
 
             <p className="mt-8 text-center text-xs leading-5 text-black/40">
-              You control what information iBag can access.
+              Your financial information is connected only after you
+              choose to connect an account.
             </p>
           </div>
         </div>
@@ -71,4 +62,3 @@ export default function CreatePage() {
     </main>
   );
 }
-```
