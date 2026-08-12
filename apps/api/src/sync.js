@@ -1,7 +1,11 @@
 const pool = require('./db');
 const plaidClient = require('./plaidClient').plaidClient;
 const { decrypt } = require('./crypto');
-const { calculateRoundup } = require('./roundup');
+const {
+  calculateRoundup,
+  getRoundupEligibility,
+  RULE_VERSION,
+} = require('./roundup');
 
 const MUTATION_DURING_PAGINATION =
   'TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION';
@@ -9,12 +13,10 @@ const MUTATION_DURING_PAGINATION =
 const MAX_PAGINATION_RESTARTS = 3;
 
 /**
- * Pull every available Transactions Sync page.
+ * Retrieve the complete Transactions Sync pagination cycle.
  *
- * Important:
- * Plaid requires the entire pagination cycle to restart from the
- * original cursor if the underlying transaction set mutates while
- * pagination is in progress.
+ * If Plaid reports that the transaction set changed while pagination
+ * was occurring, restart from the original cursor.
  */
 async function fetchTransactionUpdates(accessToken, startingCursor) {
   let restartCount = 0;
@@ -67,67 +69,16 @@ async function fetchTransactionUpdates(accessToken, startingCursor) {
       restartCount += 1;
 
       console.warn(
-        `Transactions pagination changed during sync; restarting ` +
-          `from original cursor. Attempt ${restartCount}/${MAX_PAGINATION_RESTARTS}.`
+        `Transactions pagination changed during sync. ` +
+          `Restarting from original cursor. ` +
+          `Attempt ${restartCount}/${MAX_PAGINATION_RESTARTS}.`
       );
     }
   }
 }
 
 /**
- * Determine why a transaction is or is not eligible for Round-Up.
- *
- * Round-Up rule:
- * - positive purchase
- * - below $800
- * - next-dollar difference must be > 0 and < $1
- */
-function evaluateRoundup(amount) {
-  const numericAmount = Number(amount);
-
-  if (!Number.isFinite(numericAmount)) {
-    return {
-      eligible: false,
-      reason: 'INVALID_AMOUNT',
-      roundupAmount: 0,
-    };
-  }
-
-  if (numericAmount <= 0) {
-    return {
-      eligible: false,
-      reason: 'NON_POSITIVE_AMOUNT',
-      roundupAmount: 0,
-    };
-  }
-
-  if (numericAmount >= 800) {
-    return {
-      eligible: false,
-      reason: 'RENT_SIZED_OR_LARGER',
-      roundupAmount: 0,
-    };
-  }
-
-  const roundupAmount = calculateRoundup(numericAmount);
-
-  if (roundupAmount <= 0 || roundupAmount >= 1) {
-    return {
-      eligible: false,
-      reason: 'NO_ROUNDUP_REQUIRED',
-      roundupAmount: 0,
-    };
-  }
-
-  return {
-    eligible: true,
-    reason: 'ELIGIBLE_PURCHASE',
-    roundupAmount,
-  };
-}
-
-/**
- * Reconcile one transaction into the local database.
+ * Insert or update one local transaction.
  */
 async function upsertTransaction(client, txn, accountId) {
   const result = await client.query(
@@ -185,12 +136,20 @@ async function upsertTransaction(client, txn, accountId) {
 }
 
 /**
- * Reconcile the Round-Up state associated with a transaction.
+ * Reconcile Round-Up intelligence for one transaction.
  */
-async function reconcileRoundup(client, userId, transactionId, amount) {
-  const evaluation = evaluateRoundup(amount);
+async function reconcileRoundup(
+  client,
+  userId,
+  transactionId,
+  amount
+) {
+  const numericAmount = Number(amount);
+  const evaluation = getRoundupEligibility(numericAmount);
 
   if (evaluation.eligible) {
+    const roundupAmount = calculateRoundup(numericAmount);
+
     await client.query(
       `
         INSERT INTO roundup_events (
@@ -205,7 +164,7 @@ async function reconcileRoundup(client, userId, transactionId, amount) {
           updated_at
         )
         VALUES (
-          $1,$2,$3,$4,true,$5,'ROUNDUP_STANDARD_V1','active',now()
+          $1,$2,$3,$4,true,$5,$6,'active',now()
         )
         ON CONFLICT (transaction_id)
         DO UPDATE SET
@@ -221,13 +180,17 @@ async function reconcileRoundup(client, userId, transactionId, amount) {
       [
         userId,
         transactionId,
-        evaluation.roundupAmount,
-        Number(amount),
+        roundupAmount,
+        numericAmount,
         evaluation.reason,
+        RULE_VERSION,
       ]
     );
 
-    return evaluation;
+    return {
+      ...evaluation,
+      roundupAmount,
+    };
   }
 
   await client.query(
@@ -238,27 +201,32 @@ async function reconcileRoundup(client, userId, transactionId, amount) {
         eligible = false,
         eligibility_reason = $2,
         roundup_amount = 0,
+        rule_version = $3,
         status = 'voided',
         updated_at = now()
-      WHERE transaction_id = $3
+      WHERE transaction_id = $4
     `,
     [
-      Number(amount),
+      numericAmount,
       evaluation.reason,
+      RULE_VERSION,
       transactionId,
     ]
   );
 
-  return evaluation;
+  return {
+    ...evaluation,
+    roundupAmount: 0,
+  };
 }
 
 /**
  * Mark a Plaid-removed transaction as removed.
  *
- * Do not physically delete financial intelligence history.
+ * Financial history is retained.
  */
 async function markTransactionRemoved(client, removed) {
-  const transactionId = removed.transaction_id;
+  const plaidTransactionId = removed.transaction_id;
 
   const transactionResult = await client.query(
     `
@@ -267,7 +235,7 @@ async function markTransactionRemoved(client, removed) {
       WHERE plaid_transaction_id = $1
       FOR UPDATE
     `,
-    [transactionId]
+    [plaidTransactionId]
   );
 
   if (transactionResult.rows.length === 0) {
@@ -304,6 +272,9 @@ async function markTransactionRemoved(client, removed) {
   return true;
 }
 
+/**
+ * Synchronize one active Plaid Item.
+ */
 async function syncOneItem(item) {
   const runInsert = await pool.query(
     `
@@ -365,16 +336,13 @@ async function syncOneItem(item) {
     let syncedModified = 0;
     let syncedRemoved = 0;
 
-    /*
-     * Apply added transactions.
-     */
     for (const txn of added) {
       const accountId = accountMap[txn.account_id];
 
       if (!accountId) {
         console.warn(
           `Skipping transaction ${txn.transaction_id}: ` +
-          `account ${txn.account_id} not found`
+            `account ${txn.account_id} not found`
         );
         continue;
       }
@@ -395,16 +363,13 @@ async function syncOneItem(item) {
       syncedAdded++;
     }
 
-    /*
-     * Apply modified transactions.
-     */
     for (const txn of modified) {
       const accountId = accountMap[txn.account_id];
 
       if (!accountId) {
         console.warn(
           `Skipping modified transaction ${txn.transaction_id}: ` +
-          `account ${txn.account_id} not found`
+            `account ${txn.account_id} not found`
         );
         continue;
       }
@@ -425,12 +390,6 @@ async function syncOneItem(item) {
       syncedModified++;
     }
 
-    /*
-     * Apply removed transactions.
-     *
-     * This happens after added/modified processing so a
-     * pending -> posted transition can be reconciled correctly.
-     */
     for (const removedTxn of removed) {
       const wasKnown = await markTransactionRemoved(
         pool,
@@ -443,8 +402,8 @@ async function syncOneItem(item) {
     }
 
     /*
-     * Persist the cursor only after ALL transaction updates
-     * have been successfully applied.
+     * Cursor is persisted only after the complete update set
+     * has been successfully applied.
      */
     await pool.query(
       `
@@ -505,35 +464,49 @@ async function syncOneItem(item) {
   }
 }
 
+/**
+ * Run synchronization for every active Plaid Item.
+ */
 async function runSync(req, res) {
-  const itemsResult = await pool.query(
-    `
-      SELECT
-        id,
-        plaid_item_id,
-        plaid_access_token_encrypted,
-        cursor
-      FROM plaid_items
-      WHERE status = 'active'
-    `
-  );
-
-  const results = [];
-
-  for (const item of itemsResult.rows) {
-    results.push(
-      await syncOneItem(item)
+  try {
+    const itemsResult = await pool.query(
+      `
+        SELECT
+          id,
+          plaid_item_id,
+          plaid_access_token_encrypted,
+          cursor
+        FROM plaid_items
+        WHERE status = 'active'
+      `
     );
-  }
 
-  res.json({
-    status: 'ok',
-    items_processed: results.length,
-    results,
-  });
+    const results = [];
+
+    for (const item of itemsResult.rows) {
+      results.push(await syncOneItem(item));
+    }
+
+    const failures = results.filter((result) => result.error);
+
+    res.json({
+      status: failures.length === 0 ? 'ok' : 'partial',
+      items_processed: results.length,
+      items_failed: failures.length,
+      results,
+    });
+  } catch (err) {
+    console.error('Scheduled sync failed:', err);
+
+    res.status(500).json({
+      status: 'error',
+      message: err.message,
+    });
+  }
 }
 
 module.exports = {
   runSync,
   syncOneItem,
+  fetchTransactionUpdates,
 };
