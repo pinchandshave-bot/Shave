@@ -74,7 +74,6 @@ export default function CreatePage() {
 
       if (
         data?.status !== "ok" ||
-        !data?.token ||
         !data?.user?.id ||
         !data?.ibag?.id
       ) {
@@ -86,26 +85,13 @@ export default function CreatePage() {
         return;
       }
 
-      localStorage.setItem("ibag_token", data.token);
-
-      localStorage.setItem(
-        "ibag_user",
-        JSON.stringify({
-          id: data.user.id,
-          email: data.user.email,
-        })
-      );
-
-      localStorage.setItem(
-        "ibag",
-        JSON.stringify({
-          id: data.ibag.id,
-          user_id: data.ibag.user_id,
-          created_at: data.ibag.created_at,
-        })
-      );
-
-      router.push("/start/connect");
+      /*
+       * Signup successfully created the account.
+       *
+       * We intentionally do not persist the signup JWT here.
+       * The user will explicitly sign in before continuing.
+       */
+      router.push("/start/signin");
     } catch (err) {
       console.error("iBag signup request failed:", err);
 
