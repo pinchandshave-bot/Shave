@@ -1,137 +1,695 @@
 const pool = require('./db');
 const plaidClient = require('./plaidClient').plaidClient;
 const { decrypt } = require('./crypto');
-const { calculateRoundup } = require('./roundup');
-const { syncBalance, syncLiabilities, syncInvestments, syncIdentity } = require('./products');
+const { calculateRoundup, getRoundupEligibility } = require('./roundup');
+const {
+  syncBalance,
+  syncLiabilities,
+  syncInvestments,
+  syncIdentity,
+} = require('./products');
 const { computeIncomeSignals } = require('./intelligence');
 
+/**
+ * Production transaction synchronization.
+ *
+ * Responsibilities:
+ * - Incrementally synchronize Plaid transactions.
+ * - Preserve transaction lifecycle.
+ * - Preserve pending -> posted lineage.
+ * - Maintain deterministic Round-Up calculations.
+ * - Void Round-Ups when their source transaction is removed/ineligible.
+ * - Keep provenance for every Round-Up.
+ * - Maintain sync-run audit information.
+ * - Remain idempotent when the same Plaid data is received more than once.
+ *
+ * Phase 1 scope:
+ * Round-Up intelligence only.
+ *
+ * This service NEVER moves money.
+ */
+
 async function syncOneItem(item) {
-  const runInsert = await pool.query(
-    'insert into sync_runs (plaid_item_id) values ($1) returning id',
-    [item.id]
-  );
-  const runId = runInsert.rows[0].id;
+  const client = await pool.connect();
+
+  let runId = null;
+
   try {
+    const runInsert = await client.query(
+      `
+        INSERT INTO sync_runs (plaid_item_id)
+        VALUES ($1)
+        RETURNING id
+      `,
+      [item.id]
+    );
+
+    runId = runInsert.rows[0].id;
+
     const accessToken = decrypt(item.plaid_access_token_encrypted);
-    let cursor = item.cursor;
-    let added = [], modified = [], removed = [];
+
+    let cursor = item.cursor || undefined;
+
+    const added = [];
+    const modified = [];
+    const removed = [];
+
     let hasMore = true;
+
+    /*
+     * Plaid transactions/sync is cursor based.
+     *
+     * Continue until Plaid confirms the complete change set has
+     * been consumed.
+     */
     while (hasMore) {
       const response = await plaidClient.transactionsSync({
         access_token: accessToken,
-        cursor: cursor || undefined,
+        cursor,
       });
-      added = added.concat(response.data.added);
-      modified = modified.concat(response.data.modified);
-      removed = removed.concat(response.data.removed);
-      hasMore = response.data.has_more;
-      cursor = response.data.next_cursor;
+
+      const data = response.data;
+
+      added.push(...(data.added || []));
+      modified.push(...(data.modified || []));
+      removed.push(...(data.removed || []));
+
+      hasMore = Boolean(data.has_more);
+      cursor = data.next_cursor;
     }
-    const acctRows = await pool.query(
-      'select id, plaid_account_id from accounts where plaid_item_id = $1',
+
+    /*
+     * Resolve all accounts belonging to this Item.
+     */
+    const acctRows = await client.query(
+      `
+        SELECT id, plaid_account_id
+        FROM accounts
+        WHERE plaid_item_id = $1
+      `,
       [item.id]
     );
+
     const acctMap = {};
-    for (const a of acctRows.rows) acctMap[a.plaid_account_id] = a.id;
-    const userRow = await pool.query('select user_id from plaid_items where id = $1', [item.id]);
-    const userId = userRow.rows[0].user_id;
 
-    let syncedCount = 0;
-    for (const txn of [...added, ...modified]) {
-      const accountId = acctMap[txn.account_id];
-      if (!accountId) continue;
-      const txnInsert = await pool.query(
-        `insert into transactions
-          (account_id, plaid_transaction_id, amount, iso_currency_code, merchant_name, category, pending, authorized_date, posted_date, raw)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-         on conflict (plaid_transaction_id) do update set
-           amount = excluded.amount, pending = excluded.pending, raw = excluded.raw
-         returning id`,
-        [
-          accountId, txn.transaction_id, txn.amount, txn.iso_currency_code,
-          txn.merchant_name, txn.personal_finance_category?.primary || null,
-          txn.pending, txn.authorized_date, txn.date, JSON.stringify(txn),
-        ]
+    for (const account of acctRows.rows) {
+      acctMap[account.plaid_account_id] = account.id;
+    }
+
+    const userResult = await client.query(
+      `
+        SELECT user_id
+        FROM plaid_items
+        WHERE id = $1
+      `,
+      [item.id]
+    );
+
+    if (userResult.rows.length === 0) {
+      throw new Error('Plaid Item owner could not be resolved');
+    }
+
+    const userId = userResult.rows[0].user_id;
+
+    let addedCount = 0;
+    let modifiedCount = 0;
+    let removedCount = 0;
+
+    /*
+     * Process added and modified transactions together.
+     *
+     * We intentionally process each transaction inside the same
+     * database transaction as the synchronization run so that
+     * transaction state and Round-Up state cannot partially diverge.
+     */
+    await client.query('BEGIN');
+
+    for (const transaction of [...added, ...modified]) {
+      const accountId = acctMap[transaction.account_id];
+
+      /*
+       * A Plaid transaction that references an account we do not
+       * recognize must never be inserted into the user's data.
+       */
+      if (!accountId) {
+        continue;
+      }
+
+      const isModified = modified.some(
+        (txn) => txn.transaction_id === transaction.transaction_id
       );
-      syncedCount++;
-      const txnDbId = txnInsert.rows[0].id;
-      const roundup = calculateRoundup(Number(txn.amount));
 
-      if (roundup > 0) {
-        // Option B: keep the roundup in sync with the transaction's amount.
-        // A pending charge's amount routinely changes once it posts (tips,
-        // pump pre-auths, etc.) — this updates the roundup to match rather
-        // than freezing it at the first-seen amount.
-        await pool.query(
-          `insert into roundup_events (user_id, transaction_id, roundup_amount)
-           values ($1, $2, $3)
-           on conflict (transaction_id) do update set roundup_amount = excluded.roundup_amount`,
-          [userId, txnDbId, roundup]
+      /*
+       * Plaid's pending_transaction_id is the critical linkage
+       * between a posted transaction and its previous pending form.
+       */
+      const pendingTransactionId =
+        transaction.pending_transaction_id || null;
+
+      /*
+       * First determine whether the transaction itself already exists.
+       */
+      const directExisting = await client.query(
+        `
+          SELECT
+            id,
+            plaid_transaction_id,
+            pending_transaction_id,
+            status
+          FROM transactions
+          WHERE plaid_transaction_id = $1
+          LIMIT 1
+        `,
+        [transaction.transaction_id]
+      );
+
+      let transactionDbId = null;
+
+      /*
+       * If Plaid has converted a pending transaction into a posted
+       * transaction, locate the pending record through its Plaid ID.
+       *
+       * We update the existing record's Plaid transaction ID instead
+       * of creating a second financial transaction.
+       */
+      if (
+        pendingTransactionId &&
+        transaction.pending === false
+      ) {
+        const pendingExisting = await client.query(
+          `
+            SELECT
+              id,
+              plaid_transaction_id
+            FROM transactions
+            WHERE plaid_transaction_id = $1
+            LIMIT 1
+          `,
+          [pendingTransactionId]
+        );
+
+        if (pendingExisting.rows.length > 0) {
+          const existing = pendingExisting.rows[0];
+
+          /*
+           * If the posted transaction ID is different from the pending
+           * transaction ID, migrate the same database transaction
+           * record to the posted Plaid transaction ID.
+           *
+           * The Round-Up foreign key therefore remains attached to
+           * the same logical financial transaction.
+           */
+          if (
+            existing.plaid_transaction_id !==
+            transaction.transaction_id
+          ) {
+            const updated = await client.query(
+              `
+                UPDATE transactions
+                SET
+                  plaid_transaction_id = $1,
+                  pending_transaction_id = $2,
+                  account_id = $3,
+                  amount = $4,
+                  iso_currency_code = $5,
+                  merchant_name = $6,
+                  category = $7,
+                  pending = $8,
+                  authorized_date = $9,
+                  posted_date = $10,
+                  raw = $11,
+                  status = 'active',
+                  updated_at = now()
+                WHERE id = $12
+                RETURNING id
+              `,
+              [
+                transaction.transaction_id,
+                pendingTransactionId,
+                accountId,
+                transaction.amount,
+                transaction.iso_currency_code || 'USD',
+                transaction.merchant_name || null,
+                transaction.personal_finance_category?.primary || null,
+                Boolean(transaction.pending),
+                transaction.authorized_date || null,
+                transaction.date || null,
+                JSON.stringify(transaction),
+                existing.id,
+              ]
+            );
+
+            transactionDbId = updated.rows[0].id;
+          }
+        }
+      }
+
+      /*
+       * If there was no pending -> posted migration, perform a normal
+       * upsert by Plaid transaction ID.
+       */
+      if (!transactionDbId) {
+        const result = await client.query(
+          `
+            INSERT INTO transactions (
+              account_id,
+              plaid_transaction_id,
+              pending_transaction_id,
+              amount,
+              iso_currency_code,
+              merchant_name,
+              category,
+              pending,
+              authorized_date,
+              posted_date,
+              raw,
+              status,
+              updated_at
+            )
+            VALUES (
+              $1,
+              $2,
+              $3,
+              $4,
+              $5,
+              $6,
+              $7,
+              $8,
+              $9,
+              $10,
+              $11,
+              'active',
+              now()
+            )
+            ON CONFLICT (plaid_transaction_id)
+            DO UPDATE SET
+              account_id = EXCLUDED.account_id,
+              pending_transaction_id = EXCLUDED.pending_transaction_id,
+              amount = EXCLUDED.amount,
+              iso_currency_code = EXCLUDED.iso_currency_code,
+              merchant_name = EXCLUDED.merchant_name,
+              category = EXCLUDED.category,
+              pending = EXCLUDED.pending,
+              authorized_date = EXCLUDED.authorized_date,
+              posted_date = EXCLUDED.posted_date,
+              raw = EXCLUDED.raw,
+              status = 'active',
+              updated_at = now()
+            RETURNING id
+          `,
+          [
+            accountId,
+            transaction.transaction_id,
+            pendingTransactionId,
+            transaction.amount,
+            transaction.iso_currency_code || 'USD',
+            transaction.merchant_name || null,
+            transaction.personal_finance_category?.primary || null,
+            Boolean(transaction.pending),
+            transaction.authorized_date || null,
+            transaction.date || null,
+            JSON.stringify(transaction),
+          ]
+        );
+
+        transactionDbId = result.rows[0].id;
+      }
+
+      /*
+       * Round-Up eligibility is evaluated from the current transaction
+       * state every time the transaction changes.
+       */
+      const eligibility = getRoundupEligibility(
+        Number(transaction.amount)
+      );
+
+      const roundupAmount = calculateRoundup(
+        Number(transaction.amount)
+      );
+
+      /*
+       * Pending transactions are intentionally not treated as final
+       * Round-Up events.
+       *
+       * The transaction itself is retained because it is real bank
+       * activity, but Round-Up intelligence becomes active only when
+       * the transaction is posted and eligible.
+       */
+      const eligible =
+        !transaction.pending &&
+        eligibility.eligible &&
+        roundupAmount > 0 &&
+        roundupAmount < 1;
+
+      if (eligible) {
+        await client.query(
+          `
+            INSERT INTO roundup_events (
+              user_id,
+              transaction_id,
+              roundup_amount,
+              transaction_amount,
+              eligible,
+              eligibility_reason,
+              rule_version,
+              status,
+              updated_at
+            )
+            VALUES (
+              $1,
+              $2,
+              $3,
+              $4,
+              true,
+              $5,
+              $6,
+              'active',
+              now()
+            )
+            ON CONFLICT (transaction_id)
+            DO UPDATE SET
+              user_id = EXCLUDED.user_id,
+              roundup_amount = EXCLUDED.roundup_amount,
+              transaction_amount = EXCLUDED.transaction_amount,
+              eligible = EXCLUDED.eligible,
+              eligibility_reason = EXCLUDED.eligibility_reason,
+              rule_version = EXCLUDED.rule_version,
+              status = 'active',
+              updated_at = now()
+          `,
+          [
+            userId,
+            transactionDbId,
+            roundupAmount,
+            transaction.amount,
+            eligibility.reason,
+            eligibility.ruleVersion,
+          ]
         );
       } else {
-        // The transaction's amount changed such that it's no longer
-        // roundup-eligible (e.g. corrected to a refund, or crossed the
-        // rent-sized threshold). If an earlier pass created a roundup
-        // event for it, that's now stale and needs to go — otherwise a
-        // corrected transaction leaves phantom savings behind.
-        await pool.query('delete from roundup_events where transaction_id = $1', [txnDbId]);
+        /*
+         * Never silently delete an existing Round-Up.
+         *
+         * A previously eligible transaction can become:
+         * - pending,
+         * - refunded,
+         * - corrected,
+         * - too large,
+         * - otherwise ineligible.
+         *
+         * In those cases the historical Round-Up is retained but
+         * explicitly voided.
+         */
+        await client.query(
+          `
+            UPDATE roundup_events
+            SET
+              eligible = false,
+              eligibility_reason = $1,
+              status = 'voided',
+              roundup_amount = CASE
+                WHEN roundup_amount < 0 THEN 0
+                ELSE roundup_amount
+              END,
+              transaction_amount = $2,
+              updated_at = now()
+            WHERE transaction_id = $3
+              AND status = 'active'
+          `,
+          [
+            transaction.pending
+              ? 'PENDING_TRANSACTION'
+              : eligibility.reason,
+            transaction.amount,
+            transactionDbId,
+          ]
+        );
+      }
+
+      if (isModified) {
+        modifiedCount++;
+      } else {
+        addedCount++;
       }
     }
 
-    // Plaid explicitly tells us which transactions no longer exist (a
-    // pending charge that got cancelled before posting, a duplicate Plaid
-    // itself retracted). Previously collected into `removed` and never
-    // acted on — that let cancelled transactions, and any roundup counted
-    // against them, sit in the database indefinitely.
-    for (const rem of removed) {
-      const existing = await pool.query(
-        'select id from transactions where plaid_transaction_id = $1',
-        [rem.transaction_id]
+    /*
+     * Plaid explicitly reports transactions that no longer exist.
+     *
+     * We do not physically delete them because financial intelligence
+     * requires an auditable lifecycle.
+     */
+    for (const removedTransaction of removed) {
+      const existing = await client.query(
+        `
+          SELECT id
+          FROM transactions
+          WHERE plaid_transaction_id = $1
+          LIMIT 1
+        `,
+        [removedTransaction.transaction_id]
       );
-      if (existing.rows.length > 0) {
-        const removedId = existing.rows[0].id;
-        await pool.query('delete from roundup_events where transaction_id = $1', [removedId]);
-        await pool.query('delete from transactions where id = $1', [removedId]);
+
+      if (existing.rows.length === 0) {
+        continue;
       }
+
+      const transactionId = existing.rows[0].id;
+
+      /*
+       * Preserve the Round-Up record but void it.
+       */
+      await client.query(
+        `
+          UPDATE roundup_events
+          SET
+            eligible = false,
+            eligibility_reason = 'PLAID_TRANSACTION_REMOVED',
+            status = 'voided',
+            updated_at = now()
+          WHERE transaction_id = $1
+            AND status = 'active'
+        `,
+        [transactionId]
+      );
+
+      /*
+       * Preserve the transaction itself for auditability.
+       */
+      await client.query(
+        `
+          UPDATE transactions
+          SET
+            status = 'removed',
+            updated_at = now()
+          WHERE id = $1
+        `,
+        [transactionId]
+      );
+
+      removedCount++;
     }
 
-    await pool.query('update plaid_items set cursor = $1 where id = $2', [cursor, item.id]);
+    /*
+     * Cursor is advanced only after the entire change set has been
+     * successfully persisted.
+     *
+     * This is important: a failed database transaction must not
+     * advance the cursor and permanently skip Plaid changes.
+     */
+    await client.query(
+      `
+        UPDATE plaid_items
+        SET cursor = $1
+        WHERE id = $2
+      `,
+      [cursor || null, item.id]
+    );
 
-    await syncBalance(accessToken, acctMap);
-    await syncLiabilities(accessToken, acctMap);
-    await syncInvestments(accessToken, acctMap);
-    await syncIdentity(accessToken, item.id, acctMap);
+    await client.query(
+      `
+        UPDATE sync_runs
+        SET
+          finished_at = now(),
+          added_count = $1,
+          modified_count = $2,
+          removed_count = $3,
+          status = 'success'
+        WHERE id = $4
+      `,
+      [
+        addedCount,
+        modifiedCount,
+        removedCount,
+        runId,
+      ]
+    );
+
+    await client.query('COMMIT');
+
+    /*
+     * These are separate product synchronizations. They operate on
+     * the same real Plaid Item but are not part of the transaction
+     * lifecycle above.
+     */
+    try {
+      await syncBalance(accessToken, acctMap);
+    } catch (err) {
+      console.error(
+        'Balance synchronization failed:',
+        err.message
+      );
+    }
 
     try {
-      await computeIncomeSignals(userId);
-    } catch (intelErr) {
-      console.error('Income signal computation failed for user', userId, intelErr.message);
+      await syncLiabilities(accessToken, acctMap);
+    } catch (err) {
+      console.error(
+        'Liability synchronization failed:',
+        err.message
+      );
     }
 
-    await pool.query(
-      "update sync_runs set finished_at = now(), added_count = $1, status = 'success' where id = $2",
-      [syncedCount, runId]
-    );
-    return { plaid_item_id: item.plaid_item_id, transactions_synced: syncedCount, removed_count: removed.length };
+    try {
+      await syncInvestments(accessToken, acctMap);
+    } catch (err) {
+      console.error(
+        'Investment synchronization failed:',
+        err.message
+      );
+    }
+
+    try {
+      await syncIdentity(accessToken, item.id, acctMap);
+    } catch (err) {
+      console.error(
+        'Identity synchronization failed:',
+        err.message
+      );
+    }
+
+    /*
+     * Intelligence is derived from synchronized real financial data.
+     */
+    try {
+      await computeIncomeSignals(userId);
+    } catch (err) {
+      console.error(
+        'Income signal computation failed:',
+        err.message
+      );
+    }
+
+    return {
+      plaid_item_id: item.plaid_item_id,
+      transactions_added: addedCount,
+      transactions_modified: modifiedCount,
+      transactions_removed: removedCount,
+      cursor_advanced: true,
+    };
   } catch (err) {
-    const message = err.response?.data?.error_message || err.message;
-    await pool.query(
-      "update sync_runs set finished_at = now(), status = 'error', error_message = $1 where id = $2",
-      [message, runId]
+    try {
+      await client.query('ROLLBACK');
+    } catch (rollbackError) {
+      console.error(
+        'Rollback failed:',
+        rollbackError.message
+      );
+    }
+
+    const message =
+      err.response?.data?.error_message ||
+      err.response?.data?.error_code ||
+      err.message ||
+      'Unknown synchronization error';
+
+    if (runId) {
+      try {
+        await pool.query(
+          `
+            UPDATE sync_runs
+            SET
+              finished_at = now(),
+              status = 'error',
+              error_message = $1
+            WHERE id = $2
+          `,
+          [message, runId]
+        );
+      } catch (auditError) {
+        console.error(
+          'Unable to record sync failure:',
+          auditError.message
+        );
+      }
+    }
+
+    console.error(
+      `Plaid synchronization failed for Item ${item.plaid_item_id}:`,
+      message
     );
-    return { plaid_item_id: item.plaid_item_id, error: message };
+
+    return {
+      plaid_item_id: item.plaid_item_id,
+      error: message,
+    };
+  } finally {
+    client.release();
   }
 }
 
+
+/**
+ * Process every active Plaid Item.
+ *
+ * No fabricated/demo Items are created.
+ * Only real active Items already belonging to users are processed.
+ */
 async function runSync(req, res) {
-  const itemsResult = await pool.query(
-    "select id, plaid_item_id, plaid_access_token_encrypted, cursor from plaid_items where status = 'active'"
-  );
-  const results = [];
-  for (const item of itemsResult.rows) {
-    results.push(await syncOneItem(item));
+  try {
+    const itemsResult = await pool.query(
+      `
+        SELECT
+          id,
+          plaid_item_id,
+          plaid_access_token_encrypted,
+          cursor
+        FROM plaid_items
+        WHERE status = 'active'
+        ORDER BY created_at ASC
+      `
+    );
+
+    const results = [];
+
+    for (const item of itemsResult.rows) {
+      results.push(await syncOneItem(item));
+    }
+
+    const failed = results.filter(
+      (result) => result.error
+    ).length;
+
+    return res.json({
+      status: failed > 0 ? 'partial' : 'ok',
+      items_processed: results.length,
+      items_failed: failed,
+      results,
+    });
+  } catch (err) {
+    console.error(
+      'Sync runner failed:',
+      err.message
+    );
+
+    return res.status(500).json({
+      status: 'error',
+      message: 'Unable to run financial synchronization',
+    });
   }
-  res.json({ status: 'ok', items_processed: results.length, results });
 }
 
-module.exports = { runSync, syncOneItem };
+module.exports = {
+  runSync,
+  syncOneItem,
+};
