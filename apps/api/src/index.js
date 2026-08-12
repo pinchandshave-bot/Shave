@@ -42,17 +42,12 @@ const {
 
 const app = express();
 
+
 /*
  * --------------------------------------------------------------------------
- * DEPLOYMENT IDENTITY
+ * CORS
  * --------------------------------------------------------------------------
- *
- * This endpoint is intentionally public and contains no user data.
- *
- * It allows us to prove which application version is actually running.
  */
-const APPLICATION_VERSION =
-  'IBAG-DASHBOARD-READMODEL-V1';
 
 app.use(
   cors({
@@ -64,6 +59,7 @@ app.use(
 
 app.use(express.json());
 app.use(express.static('public'));
+
 
 /*
  * --------------------------------------------------------------------------
@@ -83,6 +79,7 @@ const authLimiter = rateLimit({
   },
 });
 
+
 /*
  * --------------------------------------------------------------------------
  * SERVICE / HEALTH
@@ -94,43 +91,18 @@ app.get('/', (req, res) => {
     status: 'ok',
     service: 'shave-api',
     message: 'Shave API is running',
-    application_version:
-      APPLICATION_VERSION,
   });
 });
+
 
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
     service: 'shave-api',
-    application_version:
-      APPLICATION_VERSION,
     time: new Date().toISOString(),
   });
 });
 
-/*
- * Explicit deployment diagnostic.
- *
- * If this endpoint returns the version below after deployment,
- * we have proven that this index.js is the process serving
- * the public API.
- */
-app.get('/deployment-check', (req, res) => {
-  res.json({
-    status: 'ok',
-    application_version:
-      APPLICATION_VERSION,
-    dashboard_route_registered: true,
-    dashboard_route:
-      'GET /me/dashboard',
-    process_entry:
-      __filename,
-    working_directory:
-      process.cwd(),
-    time: new Date().toISOString(),
-  });
-});
 
 app.get('/db-check', async (req, res) => {
   try {
@@ -143,14 +115,12 @@ app.get('/db-check', async (req, res) => {
       `,
     );
 
-    res.json({
+    return res.json({
       status: 'ok',
       db_time:
         result.rows[0].db_time,
       user_count:
         result.rows[0].user_count,
-      application_version:
-        APPLICATION_VERSION,
     });
   } catch (err) {
     console.error(
@@ -158,12 +128,13 @@ app.get('/db-check', async (req, res) => {
       err,
     );
 
-    res.status(500).json({
+    return res.status(500).json({
       status: 'error',
       message: err.message,
     });
   }
 });
+
 
 /*
  * --------------------------------------------------------------------------
@@ -177,15 +148,17 @@ app.post(
   signup,
 );
 
+
 app.post(
   '/auth/login',
   authLimiter,
   login,
 );
 
+
 /*
  * --------------------------------------------------------------------------
- * AUTHENTICATED USER / DASHBOARD
+ * AUTHENTICATED USER / FINANCIAL READ ENDPOINTS
  * --------------------------------------------------------------------------
  */
 
@@ -195,11 +168,13 @@ app.get(
   getMe,
 );
 
+
 app.get(
   '/me/dashboard',
   requireAuth,
   getDashboard,
 );
+
 
 app.get(
   '/me/summary',
@@ -207,11 +182,13 @@ app.get(
   getSummary,
 );
 
+
 app.get(
   '/me/accounts',
   requireAuth,
   getAccounts,
 );
+
 
 app.get(
   '/me/transactions',
@@ -219,11 +196,13 @@ app.get(
   getTransactions,
 );
 
+
 app.get(
   '/me/insights',
   requireAuth,
   getInsights,
 );
+
 
 app.get(
   '/me/net-worth',
@@ -231,11 +210,13 @@ app.get(
   getNetWorth,
 );
 
+
 app.get(
   '/me/income',
   requireAuth,
   getIncome,
 );
+
 
 app.get(
   '/me/cash-flow',
@@ -243,12 +224,17 @@ app.get(
   getCashFlow,
 );
 
+
 /*
  * --------------------------------------------------------------------------
  * PLAID
  * --------------------------------------------------------------------------
  */
 
+
+/*
+ * Create a new Plaid Link token.
+ */
 app.post(
   '/plaid/create-link-token',
   requireAuth,
@@ -284,8 +270,7 @@ app.post(
               req.user.id,
           },
           client_name: 'iBag',
-          products:
-            PLAID_PRODUCTS,
+          products: PLAID_PRODUCTS,
           country_codes: ['US'],
           language: 'en',
         });
@@ -313,6 +298,10 @@ app.post(
   },
 );
 
+
+/*
+ * Create a Plaid update-mode Link token.
+ */
 app.post(
   '/plaid/create-update-link-token',
   requireAuth,
@@ -404,6 +393,10 @@ app.post(
   },
 );
 
+
+/*
+ * Exchange Plaid public token.
+ */
 app.post(
   '/plaid/exchange-public-token',
   requireAuth,
@@ -602,6 +595,10 @@ app.post(
   },
 );
 
+
+/*
+ * Re-sync after Plaid update mode.
+ */
 app.post(
   '/plaid/resync-after-update',
   requireAuth,
@@ -671,6 +668,7 @@ app.post(
   },
 );
 
+
 /*
  * --------------------------------------------------------------------------
  * INTERNAL SYNCHRONIZATION
@@ -683,6 +681,7 @@ app.post(
   runSync,
 );
 
+
 /*
  * --------------------------------------------------------------------------
  * 404
@@ -693,12 +692,9 @@ app.use((req, res) => {
   res.status(404).json({
     status: 'error',
     message: 'Not found',
-    path: req.originalUrl,
-    method: req.method,
-    application_version:
-      APPLICATION_VERSION,
   });
 });
+
 
 /*
  * --------------------------------------------------------------------------
@@ -721,6 +717,7 @@ app.use(
   },
 );
 
+
 /*
  * --------------------------------------------------------------------------
  * SERVER
@@ -730,24 +727,8 @@ app.use(
 const PORT =
   process.env.PORT || 3000;
 
-app.listen(
-  PORT,
-  '0.0.0.0',
-  () => {
-    console.log(
-      `shave-api listening on port ${PORT}`,
-    );
-
-    console.log(
-      `application_version=${APPLICATION_VERSION}`,
-    );
-
-    console.log(
-      `process_entry=${__filename}`,
-    );
-
-    console.log(
-      `working_directory=${process.cwd()}`,
-    );
-  },
-);
+app.listen(PORT, () => {
+  console.log(
+    `shave-api listening on port ${PORT}`,
+  );
+});
