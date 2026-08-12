@@ -124,8 +124,7 @@ export default function ConnectPage() {
             },
             body: JSON.stringify({
               public_token: publicToken,
-              institution_name:
-                metadata.institution?.name || null,
+              institution_name: metadata.institution?.name || null,
             }),
           }
         );
@@ -166,9 +165,7 @@ export default function ConnectPage() {
         console.error("Plaid Link exited with error:", exitError);
       }
 
-      if (!connecting) {
-        router.replace("/dashboard");
-      }
+      router.replace("/dashboard");
     },
   });
 
@@ -225,7 +222,9 @@ export default function ConnectPage() {
         <p className="mt-5 text-sm text-black/50">
           {connecting
             ? "Finishing your connection..."
-            : "Opening secure connection..."}
+            : loading
+              ? "Preparing secure connection..."
+              : "Opening secure connection..."}
         </p>
       </div>
     </main>
