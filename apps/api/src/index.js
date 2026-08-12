@@ -43,12 +43,11 @@ const {
 const app = express();
 
 /*
+ * --------------------------------------------------------------------------
  * CORS
- *
- * The frontend origin is supplied by Render environment variables.
- * FRONTEND_ORIGIN is optional because the production frontend has
- * a safe fallback.
+ * --------------------------------------------------------------------------
  */
+
 app.use(
   cors({
     origin:
@@ -61,8 +60,11 @@ app.use(express.json());
 app.use(express.static('public'));
 
 /*
- * Authentication rate limiter.
+ * --------------------------------------------------------------------------
+ * AUTHENTICATION RATE LIMITER
+ * --------------------------------------------------------------------------
  */
+
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 8,
@@ -113,7 +115,10 @@ app.get('/db-check', async (req, res) => {
       user_count: result.rows[0].user_count,
     });
   } catch (err) {
-    console.error('Database check failed:', err);
+    console.error(
+      'Database check failed:',
+      err,
+    );
 
     res.status(500).json({
       status: 'error',
@@ -145,14 +150,9 @@ app.post(
  * AUTHENTICATED USER / DASHBOARD
  * --------------------------------------------------------------------------
  *
- * /me is the primary authenticated identity/state endpoint.
+ * All financial reads are authenticated.
  *
- * The frontend uses this after authentication to determine:
- * - who the user is
- * - which iBag belongs to them
- * - which financial accounts are currently connected
- *
- * It does not create or modify financial data.
+ * req.user.id is the only source of user ownership.
  */
 
 app.get(
@@ -217,8 +217,6 @@ app.get(
 
 /*
  * Create a new Plaid Link token.
- *
- * Only authenticated users can create a connection.
  */
 app.post(
   '/plaid/create-link-token',
@@ -249,7 +247,8 @@ app.post(
       const response =
         await plaidClient.linkTokenCreate({
           user: {
-            client_user_id: req.user.id,
+            client_user_id:
+              req.user.id,
           },
           client_name: 'iBag',
           products: PLAID_PRODUCTS,
@@ -281,8 +280,8 @@ app.post(
 );
 
 /*
- * Create a Plaid update-mode Link token for an
- * existing Item.
+ * Create a Plaid update-mode Link token
+ * for an existing Item.
  */
 app.post(
   '/plaid/create-update-link-token',
@@ -374,8 +373,8 @@ app.post(
 );
 
 /*
- * Exchange the Plaid public token for an
- * access token and persist the Item/accounts.
+ * Exchange Plaid public token for an access token
+ * and persist the Item/accounts.
  */
 app.post(
   '/plaid/exchange-public-token',
