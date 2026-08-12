@@ -1,10 +1,34 @@
 const pool = require('./db');
 
 /**
- * Return the authenticated user's core iBag state.
+ * --------------------------------------------------------------------------
+ * AUTHENTICATED USER / iBAG READ MODEL
+ * --------------------------------------------------------------------------
  *
- * Read-only.
- * Never creates, modifies, syncs, or fabricates financial data.
+ * All functions in this file are read-only.
+ *
+ * Financial ownership is ALWAYS derived from:
+ *
+ *     req.user.id
+ *
+ * No browser-supplied user ID is trusted.
+ *
+ * No function in this file:
+ * - creates financial records
+ * - modifies financial records
+ * - synchronizes Plaid
+ * - creates Round-Up events
+ * - recalculates Round-Ups
+ * - fabricates financial values
+ */
+
+
+/**
+ * --------------------------------------------------------------------------
+ * GET /me
+ * --------------------------------------------------------------------------
+ *
+ * Return the authenticated user's core iBag state.
  */
 async function getMe(req, res) {
   try {
@@ -70,18 +94,24 @@ async function getMe(req, res) {
       accounts: accountsResult.rows,
     });
   } catch (err) {
-    console.error('Get current user failed:', err);
+    console.error(
+      'Get current user failed:',
+      err,
+    );
 
     return res.status(500).json({
       status: 'error',
-      message: 'Unable to load your iBag right now',
+      message:
+        'Unable to load your iBag right now',
     });
   }
 }
 
 
 /**
- * Financial summary.
+ * --------------------------------------------------------------------------
+ * GET /me/summary
+ * --------------------------------------------------------------------------
  *
  * Existing endpoint preserved.
  */
@@ -108,18 +138,24 @@ async function getSummary(req, res) {
       summary: result.rows[0],
     });
   } catch (err) {
-    console.error('Get summary failed:', err);
+    console.error(
+      'Get summary failed:',
+      err,
+    );
 
     return res.status(500).json({
       status: 'error',
-      message: 'Unable to load your financial summary',
+      message:
+        'Unable to load your financial summary',
     });
   }
 }
 
 
 /**
- * Connected financial accounts.
+ * --------------------------------------------------------------------------
+ * GET /me/accounts
+ * --------------------------------------------------------------------------
  */
 async function getAccounts(req, res) {
   try {
@@ -133,6 +169,10 @@ async function getAccounts(req, res) {
           a.mask,
           a.type,
           a.subtype,
+          a.current_balance,
+          a.available_balance,
+          a.balance_iso_currency_code,
+          a.balance_updated_at,
           p.institution_name,
           p.plaid_item_id
         FROM accounts a
@@ -150,18 +190,24 @@ async function getAccounts(req, res) {
       accounts: result.rows,
     });
   } catch (err) {
-    console.error('Get accounts failed:', err);
+    console.error(
+      'Get accounts failed:',
+      err,
+    );
 
     return res.status(500).json({
       status: 'error',
-      message: 'Unable to load your accounts',
+      message:
+        'Unable to load your accounts',
     });
   }
 }
 
 
 /**
- * Real transactions belonging to the authenticated user.
+ * --------------------------------------------------------------------------
+ * GET /me/transactions
+ * --------------------------------------------------------------------------
  */
 async function getTransactions(req, res) {
   try {
@@ -187,7 +233,10 @@ async function getTransactions(req, res) {
         WHERE p.user_id = $1
           AND t.status = 'active'
         ORDER BY
-          COALESCE(t.posted_date, t.authorized_date) DESC NULLS LAST,
+          COALESCE(
+            t.posted_date,
+            t.authorized_date
+          ) DESC NULLS LAST,
           t.created_at DESC
       `,
       [req.user.id],
@@ -198,20 +247,26 @@ async function getTransactions(req, res) {
       transactions: result.rows,
     });
   } catch (err) {
-    console.error('Get transactions failed:', err);
+    console.error(
+      'Get transactions failed:',
+      err,
+    );
 
     return res.status(500).json({
       status: 'error',
-      message: 'Unable to load your transactions',
+      message:
+        'Unable to load your transactions',
     });
   }
 }
 
 
 /**
- * Insights.
+ * --------------------------------------------------------------------------
+ * GET /me/insights
+ * --------------------------------------------------------------------------
  *
- * No fabricated insights are returned.
+ * No fabricated intelligence.
  */
 async function getInsights(req, res) {
   try {
@@ -220,32 +275,43 @@ async function getInsights(req, res) {
       insights: [],
     });
   } catch (err) {
-    console.error('Get insights failed:', err);
+    console.error(
+      'Get insights failed:',
+      err,
+    );
 
     return res.status(500).json({
       status: 'error',
-      message: 'Unable to load your insights',
+      message:
+        'Unable to load your insights',
     });
   }
 }
 
 
 /**
- * Account balances.
+ * --------------------------------------------------------------------------
+ * GET /me/net-worth
+ * --------------------------------------------------------------------------
  *
- * This endpoint preserves the existing response for compatibility.
+ * IMPORTANT:
  *
- * Important:
- * The dashboard does not use this as "net worth".
- * True net worth requires assets and liabilities to be
- * semantically separated.
+ * The current database query represents the sum of connected account
+ * balances. It is intentionally retained for compatibility with the
+ * existing endpoint.
+ *
+ * It should NOT be interpreted as authoritative net worth until liabilities
+ * are incorporated into the financial model.
  */
 async function getNetWorth(req, res) {
   try {
     const result = await pool.query(
       `
         SELECT
-          COALESCE(SUM(a.current_balance), 0) AS net_worth
+          COALESCE(
+            SUM(a.current_balance),
+            0
+          ) AS net_worth
         FROM accounts a
         INNER JOIN plaid_items p
           ON p.id = a.plaid_item_id
@@ -260,20 +326,24 @@ async function getNetWorth(req, res) {
       net_worth: result.rows[0].net_worth,
     });
   } catch (err) {
-    console.error('Get net worth failed:', err);
+    console.error(
+      'Get net worth failed:',
+      err,
+    );
 
     return res.status(500).json({
       status: 'error',
-      message: 'Unable to load your net worth',
+      message:
+        'Unable to load your net worth',
     });
   }
 }
 
 
 /**
- * Income.
- *
- * No fabricated value is produced.
+ * --------------------------------------------------------------------------
+ * GET /me/income
+ * --------------------------------------------------------------------------
  */
 async function getIncome(req, res) {
   try {
@@ -284,20 +354,24 @@ async function getIncome(req, res) {
         'Income analysis requires connected financial data.',
     });
   } catch (err) {
-    console.error('Get income failed:', err);
+    console.error(
+      'Get income failed:',
+      err,
+    );
 
     return res.status(500).json({
       status: 'error',
-      message: 'Unable to load your income',
+      message:
+        'Unable to load your income',
     });
   }
 }
 
 
 /**
- * Cash flow.
- *
- * No fabricated value is produced.
+ * --------------------------------------------------------------------------
+ * GET /me/cash-flow
+ * --------------------------------------------------------------------------
  */
 async function getCashFlow(req, res) {
   try {
@@ -308,46 +382,62 @@ async function getCashFlow(req, res) {
         'Cash-flow analysis requires connected financial data.',
     });
   } catch (err) {
-    console.error('Get cash flow failed:', err);
+    console.error(
+      'Get cash flow failed:',
+      err,
+    );
 
     return res.status(500).json({
       status: 'error',
-      message: 'Unable to load your cash flow',
+      message:
+        'Unable to load your cash flow',
     });
   }
 }
 
 
 /**
+ * --------------------------------------------------------------------------
+ * GET /me/dashboard
+ * --------------------------------------------------------------------------
+ *
  * Dashboard read model.
  *
- * This endpoint is READ-ONLY.
+ * This is deliberately a READ MODEL rather than another financial engine.
  *
- * It:
- * - authenticates through requireAuth in index.js
- * - scopes all financial data to req.user.id
- * - reads existing accounts
- * - reads existing transactions
- * - reads existing roundup_events
- * - does not create or modify anything
- * - does not run Plaid
- * - does not calculate a new Round-Up
- * - does not move money
- * - does not fabricate data
+ * Source hierarchy:
  *
- * The Round-Up engine remains authoritative.
- * This endpoint only reads the persisted roundup_events.
+ *   users
+ *      ↓
+ *   plaid_items
+ *      ↓
+ *   accounts
+ *      ↓
+ *   transactions
+ *      ↓
+ *   roundup_events
+ *
+ * The Round-Up amount displayed here comes ONLY from persisted
+ * roundup_events.
+ *
+ * This function does NOT:
+ *
+ * - calculate a Round-Up
+ * - create a Round-Up event
+ * - update a transaction
+ * - update an account
+ * - synchronize Plaid
+ * - move money
  */
 async function getDashboard(req, res) {
-  try {
-    const userId = req.user.id;
+  const userId = req.user.id;
 
+  try {
     /*
      * ----------------------------------------------------------------------
-     * User
+     * USER
      * ----------------------------------------------------------------------
      */
-
     const userResult = await pool.query(
       `
         SELECT
@@ -368,17 +458,17 @@ async function getDashboard(req, res) {
       });
     }
 
+    const user = userResult.rows[0];
+
     /*
      * ----------------------------------------------------------------------
-     * Connected accounts
+     * ACCOUNTS
      * ----------------------------------------------------------------------
      */
-
     const accountsResult = await pool.query(
       `
         SELECT
           a.id,
-          a.plaid_account_id,
           a.name,
           a.official_name,
           a.mask,
@@ -402,28 +492,35 @@ async function getDashboard(req, res) {
 
     /*
      * ----------------------------------------------------------------------
-     * Transaction and Round-Up summary
+     * TRANSACTION SUMMARY
      * ----------------------------------------------------------------------
+     *
+     * Only active transactions are considered current financial activity.
+     *
+     * Round-Up opportunity is deliberately calculated from roundup_events,
+     * not from transaction.amount.
      */
-
     const summaryResult = await pool.query(
       `
         SELECT
-          COUNT(DISTINCT t.id)::int AS transaction_count,
+          COUNT(DISTINCT t.id)::int
+            AS transaction_count,
 
           COUNT(
             DISTINCT CASE
               WHEN t.pending = false
               THEN t.id
             END
-          )::int AS posted_transaction_count,
+          )::int
+            AS posted_transaction_count,
 
           COUNT(
             DISTINCT CASE
               WHEN t.pending = true
               THEN t.id
             END
-          )::int AS pending_transaction_count,
+          )::int
+            AS pending_transaction_count,
 
           COUNT(
             DISTINCT CASE
@@ -431,7 +528,8 @@ async function getDashboard(req, res) {
                AND re.status = 'active'
               THEN t.id
             END
-          )::int AS eligible_purchase_count,
+          )::int
+            AS eligible_purchase_count,
 
           COALESCE(
             SUM(
@@ -479,10 +577,9 @@ async function getDashboard(req, res) {
 
     /*
      * ----------------------------------------------------------------------
-     * Category Round-Up observations
+     * CATEGORY OBSERVATION
      * ----------------------------------------------------------------------
      */
-
     const categoryResult = await pool.query(
       `
         SELECT
@@ -530,10 +627,9 @@ async function getDashboard(req, res) {
 
     /*
      * ----------------------------------------------------------------------
-     * Merchant Round-Up observations
+     * MERCHANT OBSERVATION
      * ----------------------------------------------------------------------
      */
-
     const merchantResult = await pool.query(
       `
         SELECT
@@ -588,14 +684,16 @@ async function getDashboard(req, res) {
 
     /*
      * ----------------------------------------------------------------------
-     * Recent Round-Up events
+     * RECENT ROUND-UP EVIDENCE
      * ----------------------------------------------------------------------
+     *
+     * These are actual persisted Round-Up events joined back to their
+     * underlying transactions.
      */
-
     const recentResult = await pool.query(
       `
         SELECT
-          t.id,
+          re.id,
           t.merchant_name,
           t.amount,
           t.iso_currency_code,
@@ -640,7 +738,7 @@ async function getDashboard(req, res) {
     return res.json({
       status: 'ok',
 
-      user: userResult.rows[0],
+      user,
 
       observation: {
         earliest_transaction_date:
@@ -650,7 +748,8 @@ async function getDashboard(req, res) {
           summary.latest_transaction_date,
       },
 
-      accounts: accountsResult.rows,
+      accounts:
+        accountsResult.rows,
 
       summary: {
         transaction_count:
@@ -669,9 +768,11 @@ async function getDashboard(req, res) {
           summary.roundup_opportunity,
       },
 
-      categories: categoryResult.rows,
+      categories:
+        categoryResult.rows,
 
-      merchants: merchantResult.rows,
+      merchants:
+        merchantResult.rows,
 
       recent_roundups:
         recentResult.rows,
