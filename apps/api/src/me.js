@@ -1,6 +1,11 @@
-const pool = require("./db");
-const { requireAuth } = require("./auth");
+const pool = require('./db');
 
+/**
+ * Return the authenticated user's core iBag state.
+ *
+ * This endpoint is intentionally read-only.
+ * It never creates, modifies, or fabricates financial data.
+ */
 async function getMe(req, res) {
   try {
     const userResult = await pool.query(
@@ -18,8 +23,8 @@ async function getMe(req, res) {
 
     if (userResult.rows.length === 0) {
       return res.status(404).json({
-        status: "error",
-        message: "User not found",
+        status: 'error',
+        message: 'User not found',
       });
     }
 
@@ -59,22 +64,263 @@ async function getMe(req, res) {
     );
 
     return res.json({
-      status: "ok",
+      status: 'ok',
       user,
       ibag: ibagResult.rows[0] || null,
       accounts: accountsResult.rows,
     });
   } catch (err) {
-    console.error("Get current user failed:", err);
+    console.error('Get current user failed:', err);
 
     return res.status(500).json({
-      status: "error",
-      message: "Unable to load your iBag right now",
+      status: 'error',
+      message: 'Unable to load your iBag right now',
     });
   }
 }
 
+
+/**
+ * Financial summary.
+ *
+ * Existing endpoint preserved.
+ */
+async function getSummary(req, res) {
+  try {
+    const result = await pool.query(
+      `
+        SELECT
+          COUNT(*)::int AS transaction_count,
+          COALESCE(SUM(amount), 0) AS transaction_total
+        FROM transactions t
+        INNER JOIN accounts a
+          ON a.id = t.account_id
+        INNER JOIN plaid_items p
+          ON p.id = a.plaid_item_id
+        WHERE p.user_id = $1
+          AND t.status = 'active'
+      `,
+      [req.user.id]
+    );
+
+    return res.json({
+      status: 'ok',
+      summary: result.rows[0],
+    });
+  } catch (err) {
+    console.error('Get summary failed:', err);
+
+    return res.status(500).json({
+      status: 'error',
+      message: 'Unable to load your financial summary',
+    });
+  }
+}
+
+
+/**
+ * Connected financial accounts.
+ */
+async function getAccounts(req, res) {
+  try {
+    const result = await pool.query(
+      `
+        SELECT
+          a.id,
+          a.plaid_account_id,
+          a.name,
+          a.official_name,
+          a.mask,
+          a.type,
+          a.subtype,
+          p.institution_name,
+          p.plaid_item_id
+        FROM accounts a
+        INNER JOIN plaid_items p
+          ON p.id = a.plaid_item_id
+        WHERE p.user_id = $1
+          AND p.status = 'active'
+        ORDER BY a.created_at ASC
+      `,
+      [req.user.id]
+    );
+
+    return res.json({
+      status: 'ok',
+      accounts: result.rows,
+    });
+  } catch (err) {
+    console.error('Get accounts failed:', err);
+
+    return res.status(500).json({
+      status: 'error',
+      message: 'Unable to load your accounts',
+    });
+  }
+}
+
+
+/**
+ * Real transactions belonging to the authenticated user.
+ */
+async function getTransactions(req, res) {
+  try {
+    const result = await pool.query(
+      `
+        SELECT
+          t.id,
+          t.account_id,
+          t.plaid_transaction_id,
+          t.amount,
+          t.iso_currency_code,
+          t.merchant_name,
+          t.category,
+          t.pending,
+          t.authorized_date,
+          t.posted_date,
+          t.status
+        FROM transactions t
+        INNER JOIN accounts a
+          ON a.id = t.account_id
+        INNER JOIN plaid_items p
+          ON p.id = a.plaid_item_id
+        WHERE p.user_id = $1
+          AND t.status = 'active'
+        ORDER BY
+          COALESCE(t.posted_date, t.authorized_date) DESC NULLS LAST,
+          t.created_at DESC
+      `,
+      [req.user.id]
+    );
+
+    return res.json({
+      status: 'ok',
+      transactions: result.rows,
+    });
+  } catch (err) {
+    console.error('Get transactions failed:', err);
+
+    return res.status(500).json({
+      status: 'error',
+      message: 'Unable to load your transactions',
+    });
+  }
+}
+
+
+/**
+ * Insights.
+ *
+ * No fabricated insights are returned.
+ * Until the intelligence layer has real qualifying data,
+ * the response contains an empty collection.
+ */
+async function getInsights(req, res) {
+  try {
+    return res.json({
+      status: 'ok',
+      insights: [],
+    });
+  } catch (err) {
+    console.error('Get insights failed:', err);
+
+    return res.status(500).json({
+      status: 'error',
+      message: 'Unable to load your insights',
+    });
+  }
+}
+
+
+/**
+ * Net worth.
+ *
+ * Calculated only from real connected account balances if the
+ * accounts table contains balance data.
+ */
+async function getNetWorth(req, res) {
+  try {
+    const result = await pool.query(
+      `
+        SELECT
+          COALESCE(SUM(a.current_balance), 0) AS net_worth
+        FROM accounts a
+        INNER JOIN plaid_items p
+          ON p.id = a.plaid_item_id
+        WHERE p.user_id = $1
+          AND p.status = 'active'
+      `,
+      [req.user.id]
+    );
+
+    return res.json({
+      status: 'ok',
+      net_worth: result.rows[0].net_worth,
+    });
+  } catch (err) {
+    console.error('Get net worth failed:', err);
+
+    return res.status(500).json({
+      status: 'error',
+      message: 'Unable to load your net worth',
+    });
+  }
+}
+
+
+/**
+ * Income.
+ *
+ * No fabricated value is produced.
+ */
+async function getIncome(req, res) {
+  try {
+    return res.json({
+      status: 'ok',
+      income: null,
+      message: 'Income analysis requires connected financial data.',
+    });
+  } catch (err) {
+    console.error('Get income failed:', err);
+
+    return res.status(500).json({
+      status: 'error',
+      message: 'Unable to load your income',
+    });
+  }
+}
+
+
+/**
+ * Cash flow.
+ *
+ * No fabricated value is produced.
+ */
+async function getCashFlow(req, res) {
+  try {
+    return res.json({
+      status: 'ok',
+      cash_flow: null,
+      message: 'Cash-flow analysis requires connected financial data.',
+    });
+  } catch (err) {
+    console.error('Get cash flow failed:', err);
+
+    return res.status(500).json({
+      status: 'error',
+      message: 'Unable to load your cash flow',
+    });
+  }
+}
+
+
 module.exports = {
-  requireAuth,
   getMe,
+  getSummary,
+  getAccounts,
+  getTransactions,
+  getInsights,
+  getNetWorth,
+  getIncome,
+  getCashFlow,
 };
