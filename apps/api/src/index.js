@@ -37,6 +37,7 @@ const {
   getNetWorth,
   getIncome,
   getCashFlow,
+  getDashboard,
 } = require('./me');
 
 const app = express();
@@ -158,6 +159,12 @@ app.get(
   '/me',
   requireAuth,
   getMe,
+);
+
+app.get(
+  '/me/dashboard',
+  requireAuth,
+  getDashboard,
 );
 
 app.get(
