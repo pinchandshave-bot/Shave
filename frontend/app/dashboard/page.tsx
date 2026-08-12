@@ -1,3 +1,4 @@
+```tsx
 "use client";
 
 import Link from "next/link";
@@ -61,7 +62,9 @@ export default function DashboardPage() {
     return (
       <main className="min-h-screen bg-white text-black">
         <div className="flex min-h-screen items-center justify-center px-6">
-          <p className="text-sm text-black/40">Loading your iBag...</p>
+          <p className="text-sm text-black/40">
+            Loading your iBag...
+          </p>
         </div>
       </main>
     );
@@ -101,8 +104,8 @@ export default function DashboardPage() {
           </h1>
 
           <p className="mt-5 max-w-2xl text-base leading-7 text-black/60 sm:text-lg">
-            Your iBag is ready. Connect a financial account when you're ready
-            for iBag to begin understanding your money.
+            Your iBag is ready. Connect a financial account when
+            you're ready for iBag to begin understanding your money.
           </p>
         </section>
 
@@ -123,7 +126,7 @@ export default function DashboardPage() {
             </p>
 
             <Link
-              href="/dashboard/connect"
+              href="/connect"
               className="mt-7 inline-block rounded-full bg-black px-7 py-4 text-sm font-medium text-white transition hover:bg-black/80"
             >
               Connect financial accounts
@@ -164,3 +167,4 @@ export default function DashboardPage() {
     </main>
   );
 }
+```
