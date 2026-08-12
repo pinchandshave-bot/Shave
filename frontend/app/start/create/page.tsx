@@ -4,8 +4,10 @@ import Link from "next/link";
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 
-const API_URL =
-  process.env.NEXT_PUBLIC_API_URL || "https://shave-api-4k1l.onrender.com";
+const API_URL = (
+  process.env.NEXT_PUBLIC_API_URL ||
+  "https://shave-api-4k1l.onrender.com"
+).replace(/\/+$/, "");
 
 export default function CreatePage() {
   const router = useRouter();
@@ -76,17 +78,14 @@ export default function CreatePage() {
         !data?.user?.id ||
         !data?.ibag?.id
       ) {
+        console.error("Unexpected signup response:", data);
+
         setError(
           "The server responded, but the account creation response was incomplete."
         );
         return;
       }
 
-      /*
-       * Store the authenticated state returned by signup.
-       *
-       * The user does NOT need to sign in again.
-       */
       localStorage.setItem("ibag_token", data.token);
 
       localStorage.setItem(
@@ -107,12 +106,12 @@ export default function CreatePage() {
       );
 
       /*
-       * Account creation is complete.
+       * Signup establishes authentication immediately.
        *
-       * Dashboard is the authenticated application entry point.
-       * Financial-account connection happens from the dashboard.
+       * The user does NOT sign in a second time.
+       * Financial accounts are connected later from the dashboard.
        */
-      router.replace("/dashboard");
+      router.push("/dashboard");
     } catch (err) {
       console.error("iBag signup request failed:", err);
 
@@ -235,9 +234,7 @@ export default function CreatePage() {
                 disabled={isSubmitting}
                 className="mt-7 w-full rounded-full bg-black px-6 py-4 text-base font-medium text-white transition hover:bg-black/80 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {isSubmitting
-                  ? "Creating your iBag..."
-                  : "Create your iBag"}
+                {isSubmitting ? "Creating your iBag..." : "Create your iBag"}
               </button>
             </form>
 
