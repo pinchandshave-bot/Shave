@@ -101,12 +101,10 @@ export default function SignInPage() {
       );
 
       /*
-       * Authentication is now established.
-       *
-       * The next step will be the explicit financial-account
-       * connection experience.
+       * Authentication is established.
+       * Financial connections are handled from the dashboard.
        */
-      router.push("/connect");
+      router.push("/dashboard");
     } catch (err) {
       console.error("iBag login request failed:", err);
 
