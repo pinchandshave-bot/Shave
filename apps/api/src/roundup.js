@@ -2,15 +2,18 @@ const RENT_SIZED_THRESHOLD = 800;
 const RULE_VERSION = 'ROUNDUP_STANDARD_V1';
 
 /**
- * Determines whether a transaction is eligible for Round-Up
- * intelligence.
+ * Determine whether a transaction is eligible for Round-Up intelligence.
  *
- * This function contains no randomness, external state, or fabricated
- * assumptions. The same transaction amount always produces the same
- * result.
+ * Rules:
+ * - Amount must be finite.
+ * - Amount must be positive.
+ * - Amount must be below $800.
+ * - Transaction must have a non-zero next-dollar difference.
  */
 function getRoundupEligibility(amount) {
-  if (!Number.isFinite(amount)) {
+  const numericAmount = Number(amount);
+
+  if (!Number.isFinite(numericAmount)) {
     return {
       eligible: false,
       reason: 'INVALID_AMOUNT',
@@ -18,7 +21,7 @@ function getRoundupEligibility(amount) {
     };
   }
 
-  if (amount <= 0) {
+  if (numericAmount <= 0) {
     return {
       eligible: false,
       reason: 'NON_POSITIVE_TRANSACTION',
@@ -26,7 +29,7 @@ function getRoundupEligibility(amount) {
     };
   }
 
-  if (amount >= RENT_SIZED_THRESHOLD) {
+  if (numericAmount >= RENT_SIZED_THRESHOLD) {
     return {
       eligible: false,
       reason: 'ABOVE_ROUNDUP_THRESHOLD',
@@ -34,9 +37,8 @@ function getRoundupEligibility(amount) {
     };
   }
 
-  const roundedUp = Math.ceil(amount);
   const roundup = Number(
-    (roundedUp - amount).toFixed(2)
+    (Math.ceil(numericAmount) - numericAmount).toFixed(2)
   );
 
   if (roundup <= 0) {
@@ -62,24 +64,23 @@ function getRoundupEligibility(amount) {
   };
 }
 
-
 /**
  * Calculate the exact Round-Up amount.
  *
- * Returns 0 for transactions that cannot generate a Round-Up.
+ * Returns 0 when the transaction is not eligible.
  */
 function calculateRoundup(amount) {
-  const eligibility = getRoundupEligibility(amount);
+  const numericAmount = Number(amount);
+  const eligibility = getRoundupEligibility(numericAmount);
 
   if (!eligibility.eligible) {
     return 0;
   }
 
   return Number(
-    (Math.ceil(amount) - amount).toFixed(2)
+    (Math.ceil(numericAmount) - numericAmount).toFixed(2)
   );
 }
-
 
 module.exports = {
   calculateRoundup,
