@@ -4,10 +4,8 @@ import Link from "next/link";
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 
-const API_URL = (
-  process.env.NEXT_PUBLIC_API_URL ||
-  "https://shave-api-4k1l.onrender.com"
-).replace(/\/+$/, "");
+const API_URL =
+  process.env.NEXT_PUBLIC_API_URL || "https://shave-api-4k1l.onrender.com";
 
 export default function CreatePage() {
   const router = useRouter();
@@ -74,11 +72,10 @@ export default function CreatePage() {
 
       if (
         data?.status !== "ok" ||
+        !data?.token ||
         !data?.user?.id ||
         !data?.ibag?.id
       ) {
-        console.error("Unexpected signup response:", data);
-
         setError(
           "The server responded, but the account creation response was incomplete."
         );
@@ -86,12 +83,36 @@ export default function CreatePage() {
       }
 
       /*
-       * Signup successfully created the account.
+       * Store the authenticated state returned by signup.
        *
-       * We intentionally do not persist the signup JWT here.
-       * The user will explicitly sign in before continuing.
+       * The user does NOT need to sign in again.
        */
-      router.push("/start/signin");
+      localStorage.setItem("ibag_token", data.token);
+
+      localStorage.setItem(
+        "ibag_user",
+        JSON.stringify({
+          id: data.user.id,
+          email: data.user.email,
+        })
+      );
+
+      localStorage.setItem(
+        "ibag",
+        JSON.stringify({
+          id: data.ibag.id,
+          user_id: data.ibag.user_id,
+          created_at: data.ibag.created_at,
+        })
+      );
+
+      /*
+       * Account creation is complete.
+       *
+       * Dashboard is the authenticated application entry point.
+       * Financial-account connection happens from the dashboard.
+       */
+      router.replace("/dashboard");
     } catch (err) {
       console.error("iBag signup request failed:", err);
 
