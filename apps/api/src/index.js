@@ -44,9 +44,15 @@ const app = express();
 
 /*
  * --------------------------------------------------------------------------
- * CORS
+ * DEPLOYMENT IDENTITY
  * --------------------------------------------------------------------------
+ *
+ * This endpoint is intentionally public and contains no user data.
+ *
+ * It allows us to prove which application version is actually running.
  */
+const APPLICATION_VERSION =
+  'IBAG-DASHBOARD-READMODEL-V1';
 
 app.use(
   cors({
@@ -72,7 +78,8 @@ const authLimiter = rateLimit({
   legacyHeaders: false,
   message: {
     status: 'error',
-    message: 'Too many attempts. Try again later.',
+    message:
+      'Too many attempts. Try again later.',
   },
 });
 
@@ -87,6 +94,8 @@ app.get('/', (req, res) => {
     status: 'ok',
     service: 'shave-api',
     message: 'Shave API is running',
+    application_version:
+      APPLICATION_VERSION,
   });
 });
 
@@ -94,6 +103,31 @@ app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
     service: 'shave-api',
+    application_version:
+      APPLICATION_VERSION,
+    time: new Date().toISOString(),
+  });
+});
+
+/*
+ * Explicit deployment diagnostic.
+ *
+ * If this endpoint returns the version below after deployment,
+ * we have proven that this index.js is the process serving
+ * the public API.
+ */
+app.get('/deployment-check', (req, res) => {
+  res.json({
+    status: 'ok',
+    application_version:
+      APPLICATION_VERSION,
+    dashboard_route_registered: true,
+    dashboard_route:
+      'GET /me/dashboard',
+    process_entry:
+      __filename,
+    working_directory:
+      process.cwd(),
     time: new Date().toISOString(),
   });
 });
@@ -111,8 +145,12 @@ app.get('/db-check', async (req, res) => {
 
     res.json({
       status: 'ok',
-      db_time: result.rows[0].db_time,
-      user_count: result.rows[0].user_count,
+      db_time:
+        result.rows[0].db_time,
+      user_count:
+        result.rows[0].user_count,
+      application_version:
+        APPLICATION_VERSION,
     });
   } catch (err) {
     console.error(
@@ -149,10 +187,6 @@ app.post(
  * --------------------------------------------------------------------------
  * AUTHENTICATED USER / DASHBOARD
  * --------------------------------------------------------------------------
- *
- * All financial reads are authenticated.
- *
- * req.user.id is the only source of user ownership.
  */
 
 app.get(
@@ -215,27 +249,26 @@ app.get(
  * --------------------------------------------------------------------------
  */
 
-/*
- * Create a new Plaid Link token.
- */
 app.post(
   '/plaid/create-link-token',
   requireAuth,
   async (req, res) => {
     try {
-      const activeCount = await pool.query(
-        `
-          SELECT count(*)
-          FROM plaid_items
-          WHERE status = 'active'
-        `,
-      );
+      const activeCount =
+        await pool.query(
+          `
+            SELECT count(*)
+            FROM plaid_items
+            WHERE status = 'active'
+          `,
+        );
 
       const CAPACITY_LIMIT = 9;
 
       if (
-        Number(activeCount.rows[0].count) >=
-        CAPACITY_LIMIT
+        Number(
+          activeCount.rows[0].count,
+        ) >= CAPACITY_LIMIT
       ) {
         return res.status(503).json({
           status: 'error',
@@ -251,7 +284,8 @@ app.post(
               req.user.id,
           },
           client_name: 'iBag',
-          products: PLAID_PRODUCTS,
+          products:
+            PLAID_PRODUCTS,
           country_codes: ['US'],
           language: 'en',
         });
@@ -279,10 +313,6 @@ app.post(
   },
 );
 
-/*
- * Create a Plaid update-mode Link token
- * for an existing Item.
- */
 app.post(
   '/plaid/create-update-link-token',
   requireAuth,
@@ -317,7 +347,9 @@ app.post(
           ],
         );
 
-      if (itemRow.rows.length === 0) {
+      if (
+        itemRow.rows.length === 0
+      ) {
         return res.status(404).json({
           status: 'error',
           message:
@@ -372,10 +404,6 @@ app.post(
   },
 );
 
-/*
- * Exchange Plaid public token for an access token
- * and persist the Item/accounts.
- */
 app.post(
   '/plaid/exchange-public-token',
   requireAuth,
@@ -574,10 +602,6 @@ app.post(
   },
 );
 
-/*
- * Re-sync an existing Plaid Item after
- * an update-mode Link flow.
- */
 app.post(
   '/plaid/resync-after-update',
   requireAuth,
@@ -614,7 +638,9 @@ app.post(
           ],
         );
 
-      if (itemRow.rows.length === 0) {
+      if (
+        itemRow.rows.length === 0
+      ) {
         return res.status(404).json({
           status: 'error',
           message:
@@ -667,6 +693,10 @@ app.use((req, res) => {
   res.status(404).json({
     status: 'error',
     message: 'Not found',
+    path: req.originalUrl,
+    method: req.method,
+    application_version:
+      APPLICATION_VERSION,
   });
 });
 
@@ -700,8 +730,24 @@ app.use(
 const PORT =
   process.env.PORT || 3000;
 
-app.listen(PORT, () => {
-  console.log(
-    `shave-api listening on port ${PORT}`,
-  );
-});
+app.listen(
+  PORT,
+  '0.0.0.0',
+  () => {
+    console.log(
+      `shave-api listening on port ${PORT}`,
+    );
+
+    console.log(
+      `application_version=${APPLICATION_VERSION}`,
+    );
+
+    console.log(
+      `process_entry=${__filename}`,
+    );
+
+    console.log(
+      `working_directory=${process.cwd()}`,
+    );
+  },
+);
