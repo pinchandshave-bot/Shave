@@ -4,7 +4,10 @@ import Link from "next/link";
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 
-const API_URL = "https://shave.onrender.com";
+const API_URL = (
+  process.env.NEXT_PUBLIC_API_URL ||
+  "https://shave-api-4k1l.onrender.com"
+).replace(/\/+$/, "");
 
 export default function CreatePage() {
   const router = useRouter();
@@ -40,19 +43,16 @@ export default function CreatePage() {
     setIsSubmitting(true);
 
     try {
-      const response = await fetch(
-        API_URL + "/auth/signup",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            email: normalizedEmail,
-            password: password,
-          }),
-        }
-      );
+      const response = await fetch(`${API_URL}/auth/signup`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          email: normalizedEmail,
+          password,
+        }),
+      });
 
       const responseText = await response.text();
 
@@ -67,9 +67,7 @@ export default function CreatePage() {
       if (!response.ok) {
         setError(
           data?.message ||
-            "The server returned an error while creating your iBag. HTTP " +
-              response.status +
-              "."
+            `The server returned an error while creating your iBag. HTTP ${response.status}.`
         );
         return;
       }
@@ -80,6 +78,8 @@ export default function CreatePage() {
         !data?.user?.id ||
         !data?.ibag?.id
       ) {
+        console.error("Unexpected signup response:", data);
+
         setError(
           "The server responded, but the account creation response was incomplete."
         );
