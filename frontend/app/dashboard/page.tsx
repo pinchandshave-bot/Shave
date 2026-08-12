@@ -1,13 +1,19 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
 const API_URL = (
   process.env.NEXT_PUBLIC_API_URL ||
   "https://shave-api-4k1l.onrender.com"
 ).replace(/\/+$/, "");
+
+type ApiError = {
+  status?: string;
+  message?: string;
+  detail?: unknown;
+};
 
 type Account = {
   id: string;
@@ -53,16 +59,19 @@ type RecentRoundup = {
 
 type DashboardData = {
   status: "ok";
-  user: {
+  user?: {
     id: string;
     email: string;
     created_at: string;
-  };
+  } | null;
+
   observation: {
     earliest_transaction_date: string | null;
     latest_transaction_date: string | null;
   };
+
   accounts: Account[];
+
   summary: {
     transaction_count: number;
     posted_transaction_count: number;
@@ -70,31 +79,10 @@ type DashboardData = {
     eligible_purchase_count: number;
     roundup_opportunity: number | string;
   };
+
   categories: Category[];
   merchants: Merchant[];
   recent_roundups: RecentRoundup[];
-};
-
-type MeData = {
-  status: "ok";
-  user: {
-    id: string;
-    email: string;
-    created_at: string;
-  };
-  ibag: {
-    id: string;
-    user_id: string;
-    created_at: string;
-  } | null;
-  accounts: Account[];
-};
-
-type ApiError = {
-  status: number;
-  message: string;
-  detail?: unknown;
-  endpoint?: string;
 };
 
 function numberValue(
@@ -102,7 +90,9 @@ function numberValue(
 ): number {
   const parsed = Number(value);
 
-  return Number.isFinite(parsed) ? parsed : 0;
+  return Number.isFinite(parsed)
+    ? parsed
+    : 0;
 }
 
 function money(
@@ -114,7 +104,10 @@ function money(
   try {
     return new Intl.NumberFormat("en-US", {
       style: "currency",
-      currency,
+      currency:
+        currency && currency.length === 3
+          ? currency
+          : "USD",
       maximumFractionDigits: 2,
     }).format(amount);
   } catch {
@@ -129,187 +122,49 @@ function dateLabel(
     return "Date unavailable";
   }
 
-  const normalized =
-    /^\d{4}-\d{2}-\d{2}$/.test(value)
-      ? `${value}T00:00:00`
-      : value;
+  const date = new Date(
+    `${value}T00:00:00`,
+  );
 
-  const date = new Date(normalized);
-
-  if (Number.isNaN(date.getTime())) {
+  if (
+    Number.isNaN(
+      date.getTime(),
+    )
+  ) {
     return value;
   }
 
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  }).format(date);
+  return new Intl.DateTimeFormat(
+    "en-US",
+    {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    },
+  ).format(date);
 }
 
-function formatApiDetail(detail: unknown): string {
-  if (typeof detail === "string") {
-    return detail;
+function apiErrorMessage(
+  status: number,
+  body: ApiError | null,
+): string {
+  if (status === 401) {
+    return "Your session has expired. Please sign in again.";
+  }
+
+  if (status === 404) {
+    return "The dashboard endpoint is not available on the current API deployment.";
   }
 
   if (
-    detail &&
-    typeof detail === "object"
+    body &&
+    typeof body.message === "string" &&
+    body.message.trim()
   ) {
-    try {
-      return JSON.stringify(detail);
-    } catch {
-      return "The API returned an unreadable error detail.";
-    }
+    return body.message;
   }
 
-  return "";
-}
-
-async function readJsonResponse(
-  response: Response,
-  endpoint: string,
-): Promise<{
-  payload: Record<string, unknown> | null;
-  raw: string;
-}> {
-  const raw = await response.text();
-
-  if (!raw) {
-    return {
-      payload: null,
-      raw: "",
-    };
-  }
-
-  try {
-    const parsed = JSON.parse(raw);
-
-    if (
-      parsed &&
-      typeof parsed === "object" &&
-      !Array.isArray(parsed)
-    ) {
-      return {
-        payload: parsed as Record<string, unknown>,
-        raw,
-      };
-    }
-
-    return {
-      payload: null,
-      raw,
-    };
-  } catch {
-    console.error(
-      `Invalid JSON returned by ${endpoint}:`,
-      raw,
-    );
-
-    return {
-      payload: null,
-      raw,
-    };
-  }
-}
-
-async function apiGet<T>(
-  endpoint: string,
-  token: string,
-): Promise<T> {
-  const url = `${API_URL}${endpoint}`;
-
-  let response: Response;
-
-  try {
-    response = await fetch(url, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/json",
-      },
-      cache: "no-store",
-    });
-  } catch (error) {
-    console.error(
-      `Network failure calling ${endpoint}:`,
-      error,
-    );
-
-    throw {
-      status: 0,
-      message:
-        "The iBag API could not be reached.",
-      endpoint,
-    } satisfies ApiError;
-  }
-
-  const { payload, raw } =
-    await readJsonResponse(
-      response,
-      endpoint,
-    );
-
-  if (response.status === 401) {
-    throw {
-      status: 401,
-      message:
-        "Your authenticated session is no longer valid.",
-      endpoint,
-      detail: payload,
-    } satisfies ApiError;
-  }
-
-  if (response.status === 404) {
-    throw {
-      status: 404,
-      message:
-        "The requested iBag API endpoint was not found.",
-      endpoint,
-      detail:
-        payload ||
-        raw ||
-        "No response body was returned.",
-    } satisfies ApiError;
-  }
-
-  if (!response.ok) {
-    throw {
-      status: response.status,
-      message:
-        typeof payload?.message === "string"
-          ? payload.message
-          : `The iBag API returned HTTP ${response.status}.`,
-      endpoint,
-      detail:
-        payload?.detail ??
-        payload ??
-        raw,
-    } satisfies ApiError;
-  }
-
-  if (!payload) {
-    throw {
-      status: response.status,
-      message:
-        "The iBag API returned an invalid response.",
-      endpoint,
-    } satisfies ApiError;
-  }
-
-  if (payload.status !== "ok") {
-    throw {
-      status: response.status,
-      message:
-        typeof payload.message === "string"
-          ? payload.message
-          : "The iBag API did not return an OK status.",
-      endpoint,
-      detail: payload,
-    } satisfies ApiError;
-  }
-
-  return payload as T;
+  return `The iBag API returned HTTP ${status}.`;
 }
 
 export default function DashboardPage() {
@@ -322,15 +177,21 @@ export default function DashboardPage() {
     useState(true);
 
   const [error, setError] =
-    useState<ApiError | null>(null);
+    useState<string>("");
 
-  const [retrying, setRetrying] =
-    useState(false);
+  const [httpStatus, setHttpStatus] =
+    useState<number | null>(null);
 
-  const loadDashboard =
-    useCallback(async () => {
-      setError(null);
+  const [attempt, setAttempt] =
+    useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadDashboard() {
       setLoading(true);
+      setError("");
+      setHttpStatus(null);
 
       const token =
         typeof window !== "undefined"
@@ -339,83 +200,72 @@ export default function DashboardPage() {
             )
           : null;
 
+      /*
+       * Authentication is determined by the
+       * actual API token, not by localStorage
+       * user/profile objects.
+       */
       if (!token) {
-        router.replace("/start/signin");
+        router.replace(
+          "/start/signin",
+        );
+
         return;
       }
 
       try {
         /*
-         * ------------------------------------------------------------------
-         * SESSION VERIFICATION
-         * ------------------------------------------------------------------
+         * IMPORTANT:
          *
-         * The browser's localStorage token is only the credential presented
-         * to the API. The backend remains authoritative for identity and
-         * authorization.
+         * The dashboard talks directly to the
+         * dashboard read endpoint.
          *
-         * We verify /me before loading the dashboard read model.
+         * It does NOT call /me first.
+         * It does NOT reconstruct the dashboard
+         * from multiple endpoints.
          */
-        const me =
-          await apiGet<MeData>(
-            "/me",
-            token,
+        const response =
+          await fetch(
+            `${API_URL}/me/dashboard`,
+            {
+              method: "GET",
+
+              headers: {
+                Authorization:
+                  `Bearer ${token}`,
+                Accept:
+                  "application/json",
+              },
+
+              cache: "no-store",
+            },
           );
 
-        /*
-         * ------------------------------------------------------------------
-         * DASHBOARD READ MODEL
-         * ------------------------------------------------------------------
-         *
-         * The dashboard must consume the server-generated read model.
-         * It must not reconstruct financial intelligence from individual
-         * transaction records.
-         */
-        const dashboard =
-          await apiGet<DashboardData>(
-            "/me/dashboard",
-            token,
-          );
+        const responseText =
+          await response.text();
 
-        /*
-         * The dashboard response must identify the same authenticated user
-         * returned by /me.
-         */
-        if (
-          dashboard.user?.id !==
-          me.user?.id
-        ) {
-          throw {
-            status: 500,
-            message:
-              "The dashboard identity did not match the authenticated user.",
-            endpoint:
-              "/me/dashboard",
-          } satisfies ApiError;
+        let body:
+          | DashboardData
+          | ApiError
+          | null = null;
+
+        if (responseText) {
+          try {
+            body =
+              JSON.parse(
+                responseText,
+              );
+          } catch {
+            body = {
+              status: "error",
+              message:
+                responseText,
+            };
+          }
         }
 
-        setData(dashboard);
-      } catch (err) {
-        console.error(
-          "Dashboard load failed:",
-          err,
-        );
-
-        const apiError =
-          err &&
-          typeof err === "object" &&
-          "status" in err
-            ? (err as ApiError)
-            : {
-                status: 500,
-                message:
-                  err instanceof Error
-                    ? err.message
-                    : "Unable to load your financial dashboard.",
-              };
-
         if (
-          apiError.status === 401
+          response.status === 401
         ) {
           localStorage.removeItem(
             "ibag_token",
@@ -436,15 +286,58 @@ export default function DashboardPage() {
           return;
         }
 
-        setError(apiError);
-      } finally {
-        setLoading(false);
-      }
-    }, [router]);
+        if (
+          !response.ok
+        ) {
+          throw new Error(
+            apiErrorMessage(
+              response.status,
+              body as ApiError | null,
+            ),
+          );
+        }
 
-  useEffect(() => {
+        if (
+          !body ||
+          body.status !==
+            "ok"
+        ) {
+          throw new Error(
+            "The API returned an invalid dashboard response.",
+          );
+        }
+
+        if (!cancelled) {
+          setData(
+            body as DashboardData,
+          );
+        }
+      } catch (err) {
+        console.error(
+          "Dashboard request failed:",
+          err,
+        );
+
+        if (!cancelled) {
+          setError(
+            err instanceof Error
+              ? err.message
+              : "Unable to load your financial dashboard.",
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    }
+
     loadDashboard();
-  }, [loadDashboard]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [router, attempt]);
 
   function handleSignOut() {
     localStorage.removeItem(
@@ -462,59 +355,59 @@ export default function DashboardPage() {
     router.replace("/");
   }
 
-  async function handleRetry() {
-    setRetrying(true);
-
-    try {
-      await loadDashboard();
-    } finally {
-      setRetrying(false);
-    }
-  }
-
-  const topCategory = useMemo(
-    () =>
-      data?.categories?.length
-        ? data.categories[0]
-        : null,
-    [data],
-  );
-
-  if (loading) {
-    return (
-      <main className="min-h-screen bg-white text-black">
-        <header className="flex items-center justify-between border-b border-black/10 px-6 py-6 sm:px-10">
-          <Link
-            href="/dashboard"
-            className="text-2xl font-semibold tracking-tight"
-          >
-            iBag
-          </Link>
-        </header>
-
-        <div className="flex min-h-[70vh] items-center justify-center px-6">
-          <div className="text-center">
-            <div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-black/10 border-t-black" />
-
-            <p className="mt-5 text-sm text-black/50">
-              Loading your financial picture...
-            </p>
-          </div>
-        </div>
-      </main>
+  function retry() {
+    setAttempt(
+      (current) =>
+        current + 1,
     );
   }
 
-  if (error) {
-    const isNotFound =
-      error.status === 404;
+  const summary =
+    data?.summary ?? {
+      transaction_count: 0,
+      posted_transaction_count: 0,
+      pending_transaction_count: 0,
+      eligible_purchase_count: 0,
+      roundup_opportunity: 0,
+    };
 
-    const isNetworkFailure =
-      error.status === 0;
+  const accounts =
+    data?.accounts ?? [];
 
-    const isServerFailure =
-      error.status >= 500;
+  const categories =
+    data?.categories ?? [];
 
+  const merchants =
+    data?.merchants ?? [];
+
+  const recentRoundups =
+    data?.recent_roundups ?? [];
+
+  const roundupOpportunity =
+    numberValue(
+      summary.roundup_opportunity,
+    );
+
+  const hasAccounts =
+    accounts.length > 0;
+
+  const hasTransactions =
+    summary.transaction_count > 0;
+
+  const hasRoundups =
+    summary.eligible_purchase_count >
+    0;
+
+  const topCategory =
+    useMemo(
+      () =>
+        categories.length > 0
+          ? categories[0]
+          : null,
+      [categories],
+    );
+
+  if (loading) {
     return (
       <main className="min-h-screen bg-white text-black">
         <header className="flex items-center justify-between border-b border-black/10 px-6 py-6 sm:px-10">
@@ -534,8 +427,41 @@ export default function DashboardPage() {
           </button>
         </header>
 
-        <div className="mx-auto flex min-h-[75vh] w-full max-w-3xl items-center justify-center px-6 py-16">
-          <div className="w-full rounded-[2rem] border border-black/10 p-8 sm:p-10">
+        <div className="flex min-h-[70vh] items-center justify-center px-6">
+          <div className="text-center">
+            <div className="mx-auto h-7 w-7 animate-spin rounded-full border-2 border-black/10 border-t-black" />
+
+            <p className="mt-5 text-sm text-black/50">
+              Loading your financial picture...
+            </p>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  if (error || !data) {
+    return (
+      <main className="min-h-screen bg-white text-black">
+        <header className="flex items-center justify-between border-b border-black/10 px-6 py-6 sm:px-10">
+          <Link
+            href="/dashboard"
+            className="text-2xl font-semibold tracking-tight"
+          >
+            iBag
+          </Link>
+
+          <button
+            type="button"
+            onClick={handleSignOut}
+            className="text-sm font-medium text-black/60 transition hover:text-black"
+          >
+            Sign out
+          </button>
+        </header>
+
+        <div className="mx-auto flex min-h-[70vh] w-full max-w-2xl items-center justify-center px-6 py-16">
+          <div className="w-full rounded-3xl border border-black/10 p-8 text-center sm:p-10">
             <p className="text-sm font-medium uppercase tracking-[0.2em] text-black/40">
               Dashboard
             </p>
@@ -544,86 +470,31 @@ export default function DashboardPage() {
               Your financial picture could not be loaded.
             </h1>
 
-            <p className="mt-4 text-base leading-7 text-black/60">
-              {error.message}
+            <p className="mt-4 text-sm leading-6 text-black/60">
+              {error ||
+                "The dashboard API did not return usable financial data."}
             </p>
 
-            {isNotFound && (
-              <div className="mt-7 rounded-2xl bg-black/[0.03] p-5">
-                <p className="text-sm font-semibold">
-                  API endpoint not found
-                </p>
-
-                <p className="mt-2 text-sm leading-6 text-black/60">
-                  The dashboard requested:
-                </p>
-
-                <p className="mt-2 break-all font-mono text-xs text-black/60">
-                  {API_URL}
-                  {error.endpoint ||
-                    "/me/dashboard"}
-                </p>
-
-                <p className="mt-4 text-sm leading-6 text-black/60">
-                  This is a backend routing problem,
-                  not missing financial data.
-                </p>
-              </div>
+            {httpStatus !== null && (
+              <p className="mt-3 text-xs text-black/30">
+                API response: HTTP{" "}
+                {httpStatus}
+              </p>
             )}
 
-            {isNetworkFailure && (
-              <div className="mt-7 rounded-2xl bg-black/[0.03] p-5">
-                <p className="text-sm font-semibold">
-                  API connection unavailable
-                </p>
-
-                <p className="mt-2 break-all font-mono text-xs text-black/60">
-                  {API_URL}
-                </p>
-              </div>
-            )}
-
-            {isServerFailure && (
-              <div className="mt-7 rounded-2xl bg-black/[0.03] p-5">
-                <p className="text-sm font-semibold">
-                  iBag API error
-                </p>
-
-                <p className="mt-2 text-sm leading-6 text-black/60">
-                  The request reached the API, but
-                  the API was unable to complete the
-                  dashboard request.
-                </p>
-
-                {error.detail !==
-                  undefined && (
-                  <pre className="mt-4 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-white p-4 font-mono text-xs text-black/60">
-                    {formatApiDetail(
-                      error.detail,
-                    )}
-                  </pre>
-                )}
-              </div>
-            )}
-
-            <div className="mt-7 flex flex-col gap-3 sm:flex-row">
+            <div className="mt-7 flex flex-col items-center justify-center gap-3 sm:flex-row">
               <button
                 type="button"
-                onClick={handleRetry}
-                disabled={retrying}
-                className="rounded-full bg-black px-7 py-4 text-sm font-medium text-white transition hover:bg-black/80 disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={retry}
+                className="rounded-full bg-black px-7 py-4 text-sm font-medium text-white transition hover:bg-black/80"
               >
-                {retrying
-                  ? "Checking..."
-                  : "Try again"}
+                Try again
               </button>
 
               <button
                 type="button"
                 onClick={() =>
-                  router.replace(
-                    "/dashboard",
-                  )
+                  window.location.reload()
                 }
                 className="rounded-full border border-black/10 px-7 py-4 text-sm font-medium text-black transition hover:bg-black/[0.03]"
               >
@@ -635,27 +506,6 @@ export default function DashboardPage() {
       </main>
     );
   }
-
-  if (!data) {
-    return null;
-  }
-
-  const summary =
-    data.summary;
-
-  const roundupOpportunity =
-    numberValue(
-      summary.roundup_opportunity,
-    );
-
-  const hasAccounts =
-    data.accounts.length > 0;
-
-  const hasTransactions =
-    summary.transaction_count > 0;
-
-  const hasRoundups =
-    summary.eligible_purchase_count > 0;
 
   return (
     <main className="min-h-screen bg-white text-black">
@@ -687,9 +537,7 @@ export default function DashboardPage() {
           </h1>
 
           <p className="mt-5 max-w-3xl text-base leading-7 text-black/60 sm:text-lg">
-            iBag is analyzing the real financial
-            information you authorized from your
-            connected accounts.
+            iBag is analyzing the real financial information you authorized from your connected accounts.
           </p>
         </section>
 
@@ -700,7 +548,7 @@ export default function DashboardPage() {
             </p>
 
             <p className="mt-3 text-3xl font-semibold">
-              {data.accounts.length}
+              {accounts.length}
             </p>
 
             <p className="mt-2 text-sm text-black/40">
@@ -718,8 +566,7 @@ export default function DashboardPage() {
             </p>
 
             <p className="mt-2 text-sm text-black/40">
-              {summary.pending_transaction_count}{" "}
-              pending
+              {summary.pending_transaction_count} pending
             </p>
           </div>
 
@@ -733,7 +580,7 @@ export default function DashboardPage() {
             </p>
 
             <p className="mt-2 text-sm text-black/40">
-              Created Round-Up opportunities
+              Current Round-Up opportunities
             </p>
           </div>
 
@@ -765,9 +612,7 @@ export default function DashboardPage() {
             </h2>
 
             <p className="mt-4 max-w-3xl text-base leading-7 text-black/60">
-              iBag can only analyze financial
-              information after you authorize a
-              connection.
+              iBag can only analyze financial information after you authorize a connection.
             </p>
 
             <Link
@@ -791,11 +636,7 @@ export default function DashboardPage() {
               </h2>
 
               <p className="mt-4 max-w-3xl text-base leading-7 text-black/60">
-                iBag has not received transaction
-                activity to analyze yet. As real
-                transaction data becomes available,
-                the dashboard will begin identifying
-                patterns.
+                iBag has not received transaction activity to analyze yet. No financial conclusions are being generated until real transaction data is available.
               </p>
             </section>
           )}
@@ -819,15 +660,12 @@ export default function DashboardPage() {
 
                   <p className="mt-4 text-base leading-7 text-black/60">
                     {hasRoundups
-                      ? `This represents the combined amount between each eligible purchase and the next whole dollar across ${summary.eligible_purchase_count} purchases.`
+                      ? `This represents the combined amount between each eligible purchase and the next whole dollar across ${summary.eligible_purchase_count} eligible purchases.`
                       : "iBag has analyzed the available transaction activity, but no eligible purchase has created a Round-Up opportunity yet."}
                   </p>
 
                   <p className="mt-4 text-sm leading-6 text-black/40">
-                    Round-Up opportunity is an
-                    analytical value. It is not money
-                    that has been saved, transferred, or
-                    moved.
+                    Round-Up opportunity is an analytical value. It is not money that has been saved, transferred, or moved.
                   </p>
                 </div>
 
@@ -864,19 +702,19 @@ export default function DashboardPage() {
                   Category activity
                 </h2>
 
-                {data.categories.length ===
+                {categories.length ===
                 0 ? (
                   <p className="mt-6 text-sm leading-6 text-black/50">
-                    There is not enough eligible
-                    purchase data to show a category
-                    pattern yet.
+                    There is not enough eligible purchase data to show a category pattern yet.
                   </p>
                 ) : (
                   <div className="mt-6 space-y-4">
-                    {data.categories
+                    {categories
                       .slice(0, 6)
                       .map(
-                        (category) => (
+                        (
+                          category,
+                        ) => (
                           <div
                             key={
                               category.category
@@ -923,19 +761,19 @@ export default function DashboardPage() {
                   Where opportunity concentrates
                 </h2>
 
-                {data.merchants.length ===
+                {merchants.length ===
                 0 ? (
                   <p className="mt-6 text-sm leading-6 text-black/50">
-                    There is not enough eligible
-                    purchase data to identify merchant
-                    patterns yet.
+                    There is not enough eligible purchase data to identify merchant patterns yet.
                   </p>
                 ) : (
                   <div className="mt-6 space-y-4">
-                    {data.merchants
+                    {merchants
                       .slice(0, 6)
                       .map(
-                        (merchant) => (
+                        (
+                          merchant,
+                        ) => (
                           <div
                             key={
                               merchant.merchant
@@ -994,9 +832,7 @@ export default function DashboardPage() {
                         topCategory.category
                       }
                     </span>{" "}
-                    currently produces the largest
-                    observed share of your Round-Up
-                    opportunity, with{" "}
+                    currently produces the largest observed share of your Round-Up opportunity, with{" "}
                     <span className="font-semibold text-black">
                       {money(
                         topCategory.roundup_opportunity,
@@ -1009,92 +845,90 @@ export default function DashboardPage() {
                     {topCategory.purchase_count ===
                     1
                       ? "eligible purchase"
-                      : "eligible purchases"}
-                    .
+                      : "eligible purchases"}.
                   </p>
 
                   <p className="mt-4 text-sm leading-6 text-black/40">
-                    This is an observation from the
-                    currently available transaction
-                    history, not a long-term conclusion
-                    about your financial behavior.
+                    This is an observation from the currently available transaction history, not a long-term conclusion about your financial behavior.
                   </p>
                 </div>
               ) : (
                 <p className="mt-5 text-sm leading-6 text-black/50">
-                  More eligible transaction data is
-                  needed before iBag can identify a
-                  meaningful pattern.
+                  More eligible transaction data is needed before iBag can identify a meaningful pattern.
                 </p>
               )}
             </section>
 
             <section className="mt-8 rounded-3xl border border-black/10 p-6 sm:p-8">
-              <div>
-                <p className="text-sm font-medium text-black/50">
-                  Recent activity
-                </p>
+              <p className="text-sm font-medium text-black/50">
+                Recent activity
+              </p>
 
-                <h2 className="mt-3 text-2xl font-semibold tracking-tight">
-                  Round-Up events
-                </h2>
-              </div>
+              <h2 className="mt-3 text-2xl font-semibold tracking-tight">
+                Round-Up events
+              </h2>
 
-              {data.recent_roundups.length ===
+              {recentRoundups.length ===
               0 ? (
                 <p className="mt-6 text-sm leading-6 text-black/50">
                   No Round-Up events are available yet.
                 </p>
               ) : (
                 <div className="mt-6 divide-y divide-black/5">
-                  {data.recent_roundups.map(
-                    (transaction) => (
-                      <div
-                        key={
-                          transaction.id
-                        }
-                        className="flex flex-col gap-3 py-5 first:pt-0 last:pb-0 sm:flex-row sm:items-center sm:justify-between"
-                      >
-                        <div className="min-w-0">
-                          <p className="truncate font-medium">
-                            {transaction.merchant_name ||
-                              "Unknown merchant"}
-                          </p>
+                  {recentRoundups.map(
+                    (
+                      transaction,
+                    ) => {
+                      const currency =
+                        transaction.iso_currency_code ||
+                        "USD";
 
-                          <p className="mt-1 text-sm text-black/40">
-                            {transaction.category ||
-                              "Uncategorized"}{" "}
-                            ·{" "}
-                            {transaction.pending
-                              ? "Pending"
-                              : dateLabel(
-                                  transaction.posted_date ||
-                                    transaction.authorized_date,
-                                )}
-                          </p>
+                      return (
+                        <div
+                          key={
+                            transaction.id
+                          }
+                          className="flex flex-col gap-3 py-5 first:pt-0 last:pb-0 sm:flex-row sm:items-center sm:justify-between"
+                        >
+                          <div className="min-w-0">
+                            <p className="truncate font-medium">
+                              {transaction.merchant_name ||
+                                "Unknown merchant"}
+                            </p>
+
+                            <p className="mt-1 text-sm text-black/40">
+                              {transaction.category ||
+                                "Uncategorized"}{" "}
+                              ·{" "}
+                              {transaction.pending
+                                ? "Pending"
+                                : dateLabel(
+                                    transaction.posted_date ||
+                                      transaction.authorized_date,
+                                  )}
+                            </p>
+                          </div>
+
+                          <div className="shrink-0 sm:text-right">
+                            <p className="font-medium">
+                              {money(
+                                transaction.amount,
+                                currency,
+                              )}
+                            </p>
+
+                            <p className="mt-1 text-sm font-medium text-black/50">
+                              +{" "}
+                              {money(
+                                transaction.roundup_amount,
+                                currency,
+                              )}{" "}
+                              opportunity
+                            </p>
+                          </div>
                         </div>
-
-                        <div className="shrink-0 sm:text-right">
-                          <p className="font-medium">
-                            {money(
-                              transaction.amount,
-                              transaction.iso_currency_code ||
-                                "USD",
-                            )}
-                          </p>
-
-                          <p className="mt-1 text-sm font-medium text-black/50">
-                            +{" "}
-                            {money(
-                              transaction.roundup_amount,
-                              transaction.iso_currency_code ||
-                                "USD",
-                            )}{" "}
-                            opportunity
-                          </p>
-                        </div>
-                      </div>
-                    ),
+                      );
+                    },
                   )}
                 </div>
               )}
@@ -1109,7 +943,8 @@ export default function DashboardPage() {
             </p>
 
             <p className="mt-3 break-all text-base font-medium">
-              {data.user.email}
+              {data.user?.email ||
+                "Authenticated iBag user"}
             </p>
 
             <p className="mt-2 text-sm text-black/40">
@@ -1123,7 +958,7 @@ export default function DashboardPage() {
             </p>
 
             <p className="mt-3 text-2xl font-semibold">
-              {data.accounts.length}
+              {accounts.length}
             </p>
 
             <p className="mt-2 text-sm text-black/40">
