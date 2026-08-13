@@ -30,10 +30,10 @@ const {
 
 const {
   getMe,
-  getDashboard,
   getSummary,
   getAccounts,
   getTransactions,
+  getRoundups,
   getInsights,
   getNetWorth,
   getIncome,
@@ -43,11 +43,12 @@ const {
 const app = express();
 
 /*
- * --------------------------------------------------------------------------
  * CORS
- * --------------------------------------------------------------------------
+ *
+ * The frontend origin is supplied by Render environment variables.
+ * FRONTEND_ORIGIN is optional because the production frontend has
+ * a safe fallback.
  */
-
 app.use(
   cors({
     origin:
@@ -60,11 +61,8 @@ app.use(express.json());
 app.use(express.static('public'));
 
 /*
- * --------------------------------------------------------------------------
- * AUTHENTICATION RATE LIMITER
- * --------------------------------------------------------------------------
+ * Authentication rate limiter.
  */
-
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 8,
@@ -109,7 +107,7 @@ app.get('/db-check', async (req, res) => {
       `,
     );
 
-    return res.json({
+    res.json({
       status: 'ok',
       db_time: result.rows[0].db_time,
       user_count: result.rows[0].user_count,
@@ -117,7 +115,7 @@ app.get('/db-check', async (req, res) => {
   } catch (err) {
     console.error('Database check failed:', err);
 
-    return res.status(500).json({
+    res.status(500).json({
       status: 'error',
       message: err.message,
     });
@@ -147,11 +145,14 @@ app.post(
  * AUTHENTICATED USER / DASHBOARD
  * --------------------------------------------------------------------------
  *
- * /me
+ * /me is the primary authenticated identity/state endpoint.
  *
- * Core authenticated identity and iBag state.
+ * The frontend uses this after authentication to determine:
+ * - who the user is
+ * - which iBag belongs to them
+ * - which financial accounts are currently connected
  *
- * Read-only.
+ * It does not create or modify financial data.
  */
 
 app.get(
@@ -160,43 +161,11 @@ app.get(
   getMe,
 );
 
-/*
- * /me/dashboard
- *
- * Primary financial dashboard read layer.
- *
- * This endpoint combines only real authenticated-user data:
- *
- * - connected accounts
- * - balances
- * - transaction state
- * - Round-Up opportunity
- * - Round-Up category aggregation
- * - Round-Up merchant aggregation
- * - recent Round-Up activity
- *
- * It does not create or modify financial data.
- */
-
-app.get(
-  '/me/dashboard',
-  requireAuth,
-  getDashboard,
-);
-
-/*
- * Existing financial summary.
- */
-
 app.get(
   '/me/summary',
   requireAuth,
   getSummary,
 );
-
-/*
- * Connected financial accounts.
- */
 
 app.get(
   '/me/accounts',
@@ -204,19 +173,17 @@ app.get(
   getAccounts,
 );
 
-/*
- * Real transactions belonging to the authenticated user.
- */
-
 app.get(
   '/me/transactions',
   requireAuth,
   getTransactions,
 );
 
-/*
- * Evidence-gated intelligence.
- */
+app.get(
+  '/me/roundups',
+  requireAuth,
+  getRoundups,
+);
 
 app.get(
   '/me/insights',
@@ -224,29 +191,17 @@ app.get(
   getInsights,
 );
 
-/*
- * Connected-account balance aggregation.
- */
-
 app.get(
   '/me/net-worth',
   requireAuth,
   getNetWorth,
 );
 
-/*
- * Income analysis.
- */
-
 app.get(
   '/me/income',
   requireAuth,
   getIncome,
 );
-
-/*
- * Cash-flow analysis.
- */
 
 app.get(
   '/me/cash-flow',
@@ -265,7 +220,6 @@ app.get(
  *
  * Only authenticated users can create a connection.
  */
-
 app.post(
   '/plaid/create-link-token',
   requireAuth,
@@ -327,10 +281,9 @@ app.post(
 );
 
 /*
- * Create a Plaid update-mode Link token
- * for an existing Item.
+ * Create a Plaid update-mode Link token for an
+ * existing Item.
  */
-
 app.post(
   '/plaid/create-update-link-token',
   requireAuth,
@@ -424,7 +377,6 @@ app.post(
  * Exchange the Plaid public token for an
  * access token and persist the Item/accounts.
  */
-
 app.post(
   '/plaid/exchange-public-token',
   requireAuth,
@@ -627,7 +579,6 @@ app.post(
  * Re-sync an existing Plaid Item after
  * an update-mode Link flow.
  */
-
 app.post(
   '/plaid/resync-after-update',
   requireAuth,
@@ -733,7 +684,7 @@ app.use(
       err,
     );
 
-    return res.status(500).json({
+    res.status(500).json({
       status: 'error',
       message:
         'Internal server error',
