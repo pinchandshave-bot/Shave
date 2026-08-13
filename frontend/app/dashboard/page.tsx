@@ -1,13 +1,19 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import { useRouter } from "next/navigation";
+
 
 const API_URL = (
   process.env.NEXT_PUBLIC_API_URL ||
   "https://shave-api-4k1l.onrender.com"
 ).replace(/\/+$/, "");
+
 
 type ApiError = {
   status?: string;
@@ -15,47 +21,73 @@ type ApiError = {
   detail?: unknown;
 };
 
+
 type Account = {
   id: string;
   plaid_account_id?: string | null;
   name: string | null;
-  official_name: string | null;
+  official_name?: string | null;
   mask: string | null;
   type: string | null;
   subtype: string | null;
-  current_balance: number | string | null;
-  available_balance: number | string | null;
-  balance_iso_currency_code: string | null;
-  balance_updated_at: string | null;
-  institution_name: string | null;
-  plaid_item_id?: string | null;
+  current_balance:
+    | number
+    | string
+    | null;
+  available_balance:
+    | number
+    | string
+    | null;
+  balance_iso_currency_code:
+    | string
+    | null;
+  balance_updated_at:
+    | string
+    | null;
+  institution_name:
+    | string
+    | null;
 };
+
 
 type Category = {
   category: string;
   purchase_count: number;
-  roundup_opportunity: number | string;
+  roundup_opportunity:
+    | number
+    | string;
+  average_roundup?:
+    | number
+    | string;
 };
+
 
 type Merchant = {
   merchant: string;
   purchase_count: number;
-  roundup_opportunity: number | string;
-  average_roundup: number | string;
+  roundup_opportunity:
+    | number
+    | string;
+  average_roundup:
+    | number
+    | string;
 };
 
-type RecentRoundup = {
+
+type Insight = {
   id: string;
-  merchant_name: string | null;
-  amount: number | string;
-  iso_currency_code: string | null;
-  category: string | null;
-  pending: boolean;
-  authorized_date: string | null;
-  posted_date: string | null;
-  roundup_amount: number | string;
-  rule_version: string;
+  type: string;
+  evidence_type: string;
+  confidence: string;
+  title: string;
+  statement: string;
+  evidence?: Record<
+    string,
+    unknown
+  >;
+  qualification?: string;
 };
+
 
 type DashboardData = {
   status: "ok";
@@ -67,8 +99,10 @@ type DashboardData = {
   } | null;
 
   observation: {
-    earliest_transaction_date: string | null;
-    latest_transaction_date: string | null;
+    earliest_transaction_date:
+      string | null;
+    latest_transaction_date:
+      string | null;
   };
 
   accounts: Account[];
@@ -78,72 +112,247 @@ type DashboardData = {
     posted_transaction_count: number;
     pending_transaction_count: number;
     eligible_purchase_count: number;
-    roundup_opportunity: number | string;
+    roundup_opportunity:
+      number | string;
+    average_roundup?:
+      number | string;
+    median_roundup?:
+      number | string;
+    smallest_roundup?:
+      number | string;
+    largest_roundup?:
+      number | string;
   };
 
   categories: Category[];
 
   merchants: Merchant[];
 
-  recent_roundups: RecentRoundup[];
+  recent_roundups: Array<{
+    id: string;
+    merchant_name:
+      | string
+      | null;
+    amount:
+      | number
+      | string;
+    iso_currency_code:
+      | string
+      | null;
+    category:
+      | string
+      | null;
+    pending: boolean;
+    authorized_date:
+      | string
+      | null;
+    posted_date:
+      | string
+      | null;
+    roundup_amount:
+      | number
+      | string;
+    rule_version: string;
+  }>;
+
+  intelligence?: {
+    evidence?: Record<
+      string,
+      string
+    >;
+
+    cash_flow?: {
+      evidence_state:
+        string;
+      observation_days:
+        number;
+      inflow:
+        number;
+      outflow:
+        number;
+      net_change:
+        number | null;
+      daily_inflow:
+        number | null;
+      daily_outflow:
+        number | null;
+      daily_net_change:
+        number | null;
+      direction:
+        string;
+    };
+
+    balance?: {
+      evidence_state:
+        string;
+      total_cash:
+        number | null;
+      runway_days:
+        number | null;
+      runway_months:
+        number | null;
+      daily_burn?:
+        number | null;
+      status:
+        string;
+    };
+
+    behavior?: {
+      evidence_state:
+        string;
+      total_observed_spend?:
+        number;
+      top_categories: Array<{
+        name: string;
+        transactions: number;
+        spend: number;
+        share: number;
+      }>;
+      top_merchants: Array<{
+        name: string;
+        transactions: number;
+        spend: number;
+        share: number;
+      }>;
+    };
+
+    roundup?: {
+      evidence_state: string;
+      eligible_purchase_count:
+        number;
+      opportunity: number;
+      average: number;
+      median: number;
+      smallest: number;
+      largest: number;
+    };
+
+    insights?: Insight[];
+  };
+
+  income?: {
+    evidence_state: string;
+    signal?: {
+      source:
+        | string
+        | null;
+      cadence: string;
+      typical_amount:
+        number;
+      occurrences: number;
+      reliability: number;
+      confidence: string;
+      last_detected_date:
+        string;
+      next_expected_date:
+        string;
+    } | null;
+  };
+
+  runway?: {
+    evidence_state: string;
+    total_cash: number | null;
+    total_in?: number;
+    total_out?: number;
+    net_daily_change:
+      number | null;
+    runway_days:
+      number | null;
+    status: string;
+    based_on_days?: number;
+  };
+
+  insights?: Insight[];
 };
 
-function numberValue(
-  value: number | string | null | undefined,
-): number {
-  const parsed = Number(value);
 
-  return Number.isFinite(parsed)
+function numberValue(
+  value:
+    | number
+    | string
+    | null
+    | undefined
+) {
+  const parsed =
+    Number(value);
+
+  return Number.isFinite(
+    parsed
+  )
     ? parsed
     : 0;
 }
 
+
 function money(
-  value: number | string | null | undefined,
-  currency = "USD",
-): string {
-  const amount = numberValue(value);
+  value:
+    | number
+    | string
+    | null
+    | undefined,
+  currency = "USD"
+) {
+  const amount =
+    numberValue(value);
 
   try {
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency:
-        currency && currency.length === 3
-          ? currency
-          : "USD",
-      maximumFractionDigits: 2,
-    }).format(amount);
+    return new Intl.NumberFormat(
+      "en-US",
+      {
+        style: "currency",
+        currency:
+          currency.length === 3
+            ? currency
+            : "USD",
+        maximumFractionDigits: 2,
+      }
+    ).format(amount);
   } catch {
     return `$${amount.toFixed(2)}`;
   }
 }
 
+
 function dateLabel(
-  value: string | null | undefined,
-): string {
+  value:
+    | string
+    | null
+    | undefined
+) {
   if (!value) {
     return "Date unavailable";
   }
 
-  const date = new Date(
-    `${value}T00:00:00`,
-  );
+  const date =
+    new Date(
+      `${value}T00:00:00`
+    );
 
-  if (Number.isNaN(date.getTime())) {
+  if (
+    Number.isNaN(
+      date.getTime()
+    )
+  ) {
     return value;
   }
 
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  }).format(date);
+  return new Intl.DateTimeFormat(
+    "en-US",
+    {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    }
+  ).format(date);
 }
+
 
 function apiErrorMessage(
   status: number,
-  body: ApiError | null,
-): string {
+  body:
+    | ApiError
+    | null
+) {
   if (status === 401) {
     return "Your session has expired. Please sign in again.";
   }
@@ -162,7 +371,8 @@ function apiErrorMessage(
 
   if (
     body &&
-    typeof body.message === "string" &&
+    typeof body.message ===
+      "string" &&
     body.message.trim()
   ) {
     return body.message;
@@ -171,11 +381,44 @@ function apiErrorMessage(
   return `The iBag API returned HTTP ${status}.`;
 }
 
+
+function EvidenceBadge({
+  state,
+}: {
+  state?: string;
+}) {
+  const normalized =
+    state ||
+    "insufficient";
+
+  const label =
+    normalized ===
+    "supported"
+      ? "Evidence supported"
+      : normalized ===
+        "limited"
+      ? "Limited evidence"
+      : normalized ===
+        "observed"
+      ? "Observed"
+      : "Insufficient evidence";
+
+  return (
+    <span className="inline-flex rounded-full bg-black/[0.04] px-3 py-1 text-xs font-medium text-black/50">
+      {label}
+    </span>
+  );
+}
+
+
 export default function DashboardPage() {
-  const router = useRouter();
+  const router =
+    useRouter();
 
   const [data, setData] =
-    useState<DashboardData | null>(null);
+    useState<DashboardData | null>(
+      null
+    );
 
   const [loading, setLoading] =
     useState(true);
@@ -184,13 +427,17 @@ export default function DashboardPage() {
     useState("");
 
   const [httpStatus, setHttpStatus] =
-    useState<number | null>(null);
+    useState<number | null>(
+      null
+    );
 
   const [attempt, setAttempt] =
     useState(0);
 
+
   useEffect(() => {
-    let cancelled = false;
+    let cancelled =
+      false;
 
     async function loadDashboard() {
       setLoading(true);
@@ -198,26 +445,22 @@ export default function DashboardPage() {
       setHttpStatus(null);
 
       const token =
-        typeof window !== "undefined"
+        typeof window !==
+        "undefined"
           ? localStorage.getItem(
-              "ibag_token",
+              "ibag_token"
             )
           : null;
 
       if (!token) {
         router.replace(
-          "/start/signin",
+          "/start/signin"
         );
 
         return;
       }
 
       try {
-        console.log(
-          "Loading iBag dashboard:",
-          `${API_URL}/me/dashboard`,
-        );
-
         const response =
           await fetch(
             `${API_URL}/me/dashboard`,
@@ -232,22 +475,13 @@ export default function DashboardPage() {
                   "application/json",
               },
 
-              cache: "no-store",
-            },
+              cache:
+                "no-store",
+            }
           );
 
         const responseText =
           await response.text();
-
-        console.log(
-          "Dashboard API HTTP status:",
-          response.status,
-        );
-
-        console.log(
-          "Dashboard API response:",
-          responseText,
-        );
 
         let body:
           | DashboardData
@@ -258,7 +492,7 @@ export default function DashboardPage() {
           try {
             body =
               JSON.parse(
-                responseText,
+                responseText
               );
           } catch {
             body = {
@@ -269,93 +503,77 @@ export default function DashboardPage() {
           }
         }
 
-        /*
-         * Authentication failure.
-         *
-         * Remove only the authentication
-         * state and return to sign-in.
-         */
-
         if (
-          response.status === 401
+          response.status ===
+          401
         ) {
           localStorage.removeItem(
-            "ibag_token",
+            "ibag_token"
           );
 
           localStorage.removeItem(
-            "ibag_user",
+            "ibag_user"
           );
 
           localStorage.removeItem(
-            "ibag",
+            "ibag"
           );
 
           router.replace(
-            "/start/signin",
+            "/start/signin"
           );
 
           return;
         }
 
-        /*
-         * IMPORTANT:
-         *
-         * Preserve the actual HTTP status so
-         * the dashboard tells us exactly what
-         * the API returned.
-         */
-
         if (!response.ok) {
           if (!cancelled) {
             setHttpStatus(
-              response.status,
+              response.status
             );
           }
 
           throw new Error(
             apiErrorMessage(
               response.status,
-              body as ApiError | null,
-            ),
+              body as ApiError | null
+            )
           );
         }
 
-        /*
-         * The dashboard endpoint must return
-         * { status: "ok", ... }
-         */
-
         if (
           !body ||
-          body.status !== "ok"
+          body.status !==
+            "ok"
         ) {
           throw new Error(
-            "The API returned an invalid dashboard response.",
+            "The API returned an invalid dashboard response."
           );
         }
 
         if (!cancelled) {
           setData(
-            body as DashboardData,
+            body as DashboardData
           );
         }
       } catch (err) {
         console.error(
           "Dashboard request failed:",
-          err,
+          err
         );
 
         if (!cancelled) {
           setError(
             err instanceof Error
               ? err.message
-              : "Unable to load your financial dashboard.",
+              : "Unable to load your financial dashboard."
           );
         }
       } finally {
         if (!cancelled) {
-          setLoading(false);
+          setLoading(
+            false
+          );
         }
       }
     }
@@ -367,31 +585,33 @@ export default function DashboardPage() {
     };
   }, [router, attempt]);
 
+
   function handleSignOut() {
     localStorage.removeItem(
-      "ibag_token",
+      "ibag_token"
     );
 
     localStorage.removeItem(
-      "ibag_user",
+      "ibag_user"
     );
 
     localStorage.removeItem(
-      "ibag",
+      "ibag"
     );
 
     router.replace("/");
   }
 
-  function retry() {
+
+  const retry = () =>
     setAttempt(
-      (current) =>
-        current + 1,
+      current =>
+        current + 1
     );
-  }
+
 
   const summary =
-    data?.summary ?? {
+    data?.summary || {
       transaction_count: 0,
       posted_transaction_count: 0,
       pending_transaction_count: 0,
@@ -399,45 +619,54 @@ export default function DashboardPage() {
       roundup_opportunity: 0,
     };
 
-  const accounts =
-    data?.accounts ?? [];
 
-  const categories =
-    data?.categories ?? [];
+  const intelligence =
+    data?.intelligence;
 
-  const merchants =
-    data?.merchants ?? [];
+  const cashFlow =
+    intelligence?.cash_flow;
 
-  const recentRoundups =
-    data?.recent_roundups ?? [];
+  const balance =
+    intelligence?.balance;
+
+  const behavior =
+    intelligence?.behavior;
+
+  const income =
+    data?.income;
+
+  const insights =
+    data?.insights ||
+    intelligence?.insights ||
+    [];
+
 
   const roundupOpportunity =
     numberValue(
-      summary.roundup_opportunity,
+      summary.roundup_opportunity
     );
 
+
   const hasAccounts =
-    accounts.length > 0;
+    Boolean(
+      data?.accounts.length
+    );
+
 
   const hasTransactions =
-    summary.transaction_count > 0;
-
-  const hasRoundups =
-    summary.eligible_purchase_count >
+    summary.transaction_count >
     0;
+
 
   const topCategory =
     useMemo(
       () =>
-        categories.length > 0
-          ? categories[0]
+        data?.categories?.length
+          ? data.categories[0]
           : null,
-      [categories],
+      [data]
     );
 
-  /*
-   * LOADING
-   */
 
   if (loading) {
     return (
@@ -451,20 +680,21 @@ export default function DashboardPage() {
           </Link>
 
           <button
-            type="button"
-            onClick={handleSignOut}
-            className="text-sm font-medium text-black/60 transition hover:text-black"
+            onClick={
+              handleSignOut
+            }
+            className="text-sm font-medium text-black/60"
           >
             Sign out
           </button>
         </header>
 
-        <div className="flex min-h-[70vh] items-center justify-center px-6">
+        <div className="flex min-h-[70vh] items-center justify-center">
           <div className="text-center">
             <div className="mx-auto h-7 w-7 animate-spin rounded-full border-2 border-black/10 border-t-black" />
 
             <p className="mt-5 text-sm text-black/50">
-              Loading your financial picture...
+              Building your financial picture...
             </p>
           </div>
         </div>
@@ -472,9 +702,6 @@ export default function DashboardPage() {
     );
   }
 
-  /*
-   * ERROR
-   */
 
   if (error || !data) {
     return (
@@ -482,78 +709,59 @@ export default function DashboardPage() {
         <header className="flex items-center justify-between border-b border-black/10 px-6 py-6 sm:px-10">
           <Link
             href="/dashboard"
-            className="text-2xl font-semibold tracking-tight"
+            className="text-2xl font-semibold"
           >
             iBag
           </Link>
 
           <button
-            type="button"
-            onClick={handleSignOut}
-            className="text-sm font-medium text-black/60 transition hover:text-black"
+            onClick={
+              handleSignOut
+            }
+            className="text-sm text-black/60"
           >
             Sign out
           </button>
         </header>
 
-        <div className="mx-auto flex min-h-[70vh] w-full max-w-2xl items-center justify-center px-6 py-16">
-          <div className="w-full rounded-3xl border border-black/10 p-8 text-center sm:p-10">
-            <p className="text-sm font-medium uppercase tracking-[0.2em] text-black/40">
+        <div className="mx-auto flex min-h-[70vh] max-w-2xl items-center px-6">
+          <div className="w-full rounded-3xl border border-black/10 p-8 text-center">
+            <p className="text-xs font-medium uppercase tracking-[0.2em] text-black/40">
               Dashboard
             </p>
 
-            <h1 className="mt-4 text-3xl font-semibold tracking-tight sm:text-4xl">
+            <h1 className="mt-4 text-3xl font-semibold tracking-tight">
               Your financial picture could not be loaded.
             </h1>
 
             <p className="mt-4 text-sm leading-6 text-black/60">
-              {error ||
-                "The dashboard API did not return usable financial data."}
+              {error}
             </p>
 
-            {httpStatus !== null && (
-              <div className="mt-4 rounded-2xl bg-black/[0.03] px-5 py-4">
-                <p className="text-xs font-medium uppercase tracking-[0.15em] text-black/40">
-                  API response
-                </p>
-
-                <p className="mt-2 text-lg font-semibold">
-                  HTTP {httpStatus}
-                </p>
-              </div>
+            {httpStatus !==
+              null && (
+              <p className="mt-4 text-sm font-medium">
+                HTTP{" "}
+                {httpStatus}
+              </p>
             )}
 
-            <div className="mt-7 flex flex-col items-center justify-center gap-3 sm:flex-row">
-              <button
-                type="button"
-                onClick={retry}
-                className="rounded-full bg-black px-7 py-4 text-sm font-medium text-white transition hover:bg-black/80"
-              >
-                Try again
-              </button>
-
-              <button
-                type="button"
-                onClick={() =>
-                  window.location.reload()
-                }
-                className="rounded-full border border-black/10 px-7 py-4 text-sm font-medium text-black transition hover:bg-black/[0.03]"
-              >
-                Reload dashboard
-              </button>
-            </div>
+            <button
+              onClick={retry}
+              className="mt-7 rounded-full bg-black px-7 py-4 text-sm font-medium text-white"
+            >
+              Try again
+            </button>
           </div>
         </div>
       </main>
     );
   }
 
-  /*
-   * DASHBOARD
-   */
 
   return (
     <main className="min-h-screen bg-white text-black">
+
       <header className="flex items-center justify-between border-b border-black/10 px-6 py-6 sm:px-10">
         <Link
           href="/dashboard"
@@ -563,15 +771,17 @@ export default function DashboardPage() {
         </Link>
 
         <button
-          type="button"
-          onClick={handleSignOut}
-          className="text-sm font-medium text-black/60 transition hover:text-black"
+          onClick={
+            handleSignOut
+          }
+          className="text-sm font-medium text-black/60 hover:text-black"
         >
           Sign out
         </button>
       </header>
 
-      <div className="mx-auto w-full max-w-6xl px-6 py-12 sm:px-10 sm:py-16">
+
+      <div className="mx-auto max-w-7xl px-6 py-12 sm:px-10">
 
         <section>
           <p className="text-sm font-medium uppercase tracking-[0.25em] text-black/40">
@@ -583,29 +793,35 @@ export default function DashboardPage() {
           </h1>
 
           <p className="mt-5 max-w-3xl text-base leading-7 text-black/60 sm:text-lg">
-            iBag is analyzing the real financial information you authorized from your connected accounts.
+            iBag is turning the real financial information you authorized into measurable financial intelligence.
           </p>
         </section>
 
-        <section className="mt-12 grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
+
+        {/* ---------------------------------------------------------------- */}
+        {/* CORE STATE                                                       */}
+        {/* ---------------------------------------------------------------- */}
+
+        <section className="mt-12 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
 
           <div className="rounded-3xl border border-black/10 p-6">
-            <p className="text-sm font-medium text-black/50">
-              Connected accounts
+            <p className="text-sm text-black/50">
+              Accounts
             </p>
 
             <p className="mt-3 text-3xl font-semibold">
-              {accounts.length}
+              {data.accounts.length}
             </p>
 
             <p className="mt-2 text-sm text-black/40">
-              Active financial connections
+              Connected financial accounts
             </p>
           </div>
 
+
           <div className="rounded-3xl border border-black/10 p-6">
-            <p className="text-sm font-medium text-black/50">
-              Transactions observed
+            <p className="text-sm text-black/50">
+              Transactions
             </p>
 
             <p className="mt-3 text-3xl font-semibold">
@@ -613,13 +829,15 @@ export default function DashboardPage() {
             </p>
 
             <p className="mt-2 text-sm text-black/40">
+              {summary.posted_transaction_count} posted ·{" "}
               {summary.pending_transaction_count} pending
             </p>
           </div>
 
+
           <div className="rounded-3xl border border-black/10 p-6">
-            <p className="text-sm font-medium text-black/50">
-              Eligible purchases
+            <p className="text-sm text-black/50">
+              Round-Up opportunities
             </p>
 
             <p className="mt-3 text-3xl font-semibold">
@@ -627,161 +845,422 @@ export default function DashboardPage() {
             </p>
 
             <p className="mt-2 text-sm text-black/40">
-              Current Round-Up opportunities
+              Eligible purchases observed
             </p>
           </div>
 
+
           <div className="rounded-3xl border border-black/10 p-6">
-            <p className="text-sm font-medium text-black/50">
-              Round-Up opportunity
+            <p className="text-sm text-black/50">
+              Opportunity
             </p>
 
             <p className="mt-3 text-3xl font-semibold">
               {money(
-                roundupOpportunity,
+                roundupOpportunity
               )}
             </p>
 
             <p className="mt-2 text-sm text-black/40">
-              Calculated from eligible purchases
+              Analytical Round-Up value
             </p>
           </div>
 
         </section>
 
+
         {!hasAccounts && (
-          <section className="mt-8 rounded-3xl border border-black/10 p-6 sm:p-8">
+          <section className="mt-8 rounded-3xl border border-black/10 p-8">
+            <EvidenceBadge state="insufficient" />
 
-            <p className="text-sm font-medium text-black/50">
-              Financial picture
-            </p>
-
-            <h2 className="mt-3 text-2xl font-semibold tracking-tight sm:text-3xl">
+            <h2 className="mt-4 text-3xl font-semibold">
               Connect a financial account to begin.
             </h2>
 
-            <p className="mt-4 max-w-3xl text-base leading-7 text-black/60">
-              iBag can only analyze financial information after you authorize a connection.
+            <p className="mt-4 max-w-2xl text-black/60">
+              iBag only creates financial intelligence from information you authorize.
             </p>
 
             <Link
               href="/connect"
-              className="mt-7 inline-flex rounded-full bg-black px-7 py-4 text-sm font-medium text-white transition hover:bg-black/80"
+              className="mt-7 inline-flex rounded-full bg-black px-7 py-4 text-sm font-medium text-white"
             >
               Connect financial accounts
             </Link>
-
           </section>
         )}
 
+
         {hasAccounts &&
           !hasTransactions && (
-            <section className="mt-8 rounded-3xl border border-black/10 p-6 sm:p-8">
+            <section className="mt-8 rounded-3xl border border-black/10 p-8">
+              <EvidenceBadge state="observed" />
 
-              <p className="text-sm font-medium text-black/50">
-                Early picture
-              </p>
-
-              <h2 className="mt-3 text-2xl font-semibold tracking-tight sm:text-3xl">
+              <h2 className="mt-4 text-3xl font-semibold">
                 Your accounts are connected.
               </h2>
 
-              <p className="mt-4 max-w-3xl text-base leading-7 text-black/60">
-                iBag has not received transaction activity to analyze yet. No financial conclusions are being generated until real transaction data is available.
+              <p className="mt-4 max-w-2xl text-black/60">
+                iBag is waiting for qualifying transaction history. It will not invent financial conclusions while evidence is insufficient.
               </p>
-
             </section>
-        )}
+          )}
+
 
         {hasTransactions && (
           <>
-            <section className="mt-8 rounded-3xl border border-black/10 p-6 sm:p-8">
 
-              <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+            {/* ------------------------------------------------------------ */}
+            {/* FINANCIAL INTELLIGENCE                                       */}
+            {/* ------------------------------------------------------------ */}
 
-                <div className="max-w-3xl">
+            <section className="mt-8">
 
-                  <p className="text-sm font-medium text-black/50">
-                    Round-Up intelligence
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+
+                <div>
+                  <p className="text-sm font-medium uppercase tracking-[0.2em] text-black/40">
+                    Financial intelligence
                   </p>
 
-                  <h2 className="mt-3 text-2xl font-semibold tracking-tight sm:text-3xl">
-                    {hasRoundups
-                      ? `${money(
-                          roundupOpportunity,
-                        )} of Round-Up opportunity`
-                      : "No Round-Up opportunity identified yet."}
+                  <h2 className="mt-2 text-3xl font-semibold tracking-tight">
+                    What the data supports.
                   </h2>
+                </div>
 
-                  <p className="mt-4 text-base leading-7 text-black/60">
-                    {hasRoundups
-                      ? `This represents the combined amount between each eligible purchase and the next whole dollar across ${summary.eligible_purchase_count} eligible purchases.`
-                      : "iBag has analyzed the available transaction activity, but no eligible purchase has created a Round-Up opportunity yet."}
+                <p className="text-sm text-black/40">
+                  Evidence-gated · read-only
+                </p>
+
+              </div>
+
+
+              <div className="mt-6 grid gap-5 lg:grid-cols-3">
+
+                {/* CASH FLOW */}
+
+                <div className="rounded-3xl border border-black/10 p-6">
+
+                  <EvidenceBadge
+                    state={
+                      cashFlow?.evidence_state
+                    }
+                  />
+
+                  <p className="mt-5 text-sm font-medium text-black/50">
+                    Cash flow
                   </p>
 
-                  <p className="mt-4 text-sm leading-6 text-black/40">
-                    Round-Up opportunity is an analytical value. It is not money that has been saved, transferred, or moved.
-                  </p>
+                  {cashFlow?.net_change !==
+                  null ? (
+                    <>
+                      <p className="mt-3 text-3xl font-semibold">
+                        {money(
+                          cashFlow.net_change
+                        )}
+                      </p>
+
+                      <p className="mt-2 text-sm text-black/50">
+                        Net observed change
+                      </p>
+
+                      <div className="mt-6 grid grid-cols-2 gap-3">
+
+                        <div className="rounded-2xl bg-black/[0.03] p-4">
+                          <p className="text-xs text-black/40">
+                            Inflow
+                          </p>
+
+                          <p className="mt-2 font-semibold">
+                            {money(
+                              cashFlow.inflow
+                            )}
+                          </p>
+                        </div>
+
+                        <div className="rounded-2xl bg-black/[0.03] p-4">
+                          <p className="text-xs text-black/40">
+                            Outflow
+                          </p>
+
+                          <p className="mt-2 font-semibold">
+                            {money(
+                              cashFlow.outflow
+                            )}
+                          </p>
+                        </div>
+
+                      </div>
+                    </>
+                  ) : (
+                    <p className="mt-5 text-sm text-black/50">
+                      More transaction history is required to calculate cash-flow direction.
+                    </p>
+                  )}
 
                 </div>
 
-                <div className="shrink-0 rounded-2xl bg-black/[0.03] px-5 py-4">
 
-                  <p className="text-xs font-medium uppercase tracking-[0.15em] text-black/40">
-                    Observation window
+                {/* LIQUIDITY */}
+
+                <div className="rounded-3xl border border-black/10 p-6">
+
+                  <EvidenceBadge
+                    state={
+                      balance?.evidence_state
+                    }
+                  />
+
+                  <p className="mt-5 text-sm font-medium text-black/50">
+                    Liquidity
                   </p>
 
-                  <p className="mt-2 text-sm font-medium">
-                    {dateLabel(
-                      data.observation
-                        .earliest_transaction_date,
+                  <p className="mt-3 text-3xl font-semibold">
+                    {balance?.total_cash !==
+                    null &&
+                    balance?.total_cash !==
+                      undefined
+                      ? money(
+                          balance.total_cash
+                        )
+                      : "—"}
+                  </p>
+
+                  <p className="mt-2 text-sm text-black/50">
+                    Current depository balances
+                  </p>
+
+                  {balance?.runway_days !==
+                  null &&
+                  balance?.runway_days !==
+                    undefined ? (
+                    <div className="mt-6 rounded-2xl bg-black/[0.03] p-4">
+                      <p className="text-xs text-black/40">
+                        Observed runway
+                      </p>
+
+                      <p className="mt-2 text-2xl font-semibold">
+                        {
+                          balance.runway_days
+                        }{" "}
+                        days
+                      </p>
+
+                      <p className="mt-2 text-xs leading-5 text-black/40">
+                        Mathematical projection from observed net cash decline. Not a forecast.
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="mt-6 text-sm leading-6 text-black/40">
+                      A declining cash balance is not currently supported by sufficient evidence for a runway calculation.
+                    </p>
+                  )}
+
+                </div>
+
+
+                {/* INCOME */}
+
+                <div className="rounded-3xl border border-black/10 p-6">
+
+                  <EvidenceBadge
+                    state={
+                      income?.evidence_state
+                    }
+                  />
+
+                  <p className="mt-5 text-sm font-medium text-black/50">
+                    Recurring income signal
+                  </p>
+
+                  {income?.signal ? (
+                    <>
+                      <p className="mt-3 text-3xl font-semibold">
+                        {money(
+                          income.signal
+                            .typical_amount
+                        )}
+                      </p>
+
+                      <p className="mt-2 text-sm text-black/50">
+                        Observed{" "}
+                        {
+                          income.signal
+                            .cadence
+                        }{" "}
+                        pattern
+                      </p>
+
+                      <div className="mt-6 space-y-3 text-sm">
+
+                        <div className="flex justify-between gap-4">
+                          <span className="text-black/40">
+                            Evidence
+                          </span>
+
+                          <span className="font-medium">
+                            {
+                              income.signal
+                                .occurrences
+                            }{" "}
+                            occurrences
+                          </span>
+                        </div>
+
+                        <div className="flex justify-between gap-4">
+                          <span className="text-black/40">
+                            Reliability
+                          </span>
+
+                          <span className="font-medium">
+                            {Math.round(
+                              income.signal
+                                .reliability *
+                                100
+                            )}
+                            %
+                          </span>
+                        </div>
+
+                        <div className="flex justify-between gap-4">
+                          <span className="text-black/40">
+                            Next expected
+                          </span>
+
+                          <span className="font-medium">
+                            {dateLabel(
+                              income.signal
+                                .next_expected_date
+                            )}
+                          </span>
+                        </div>
+
+                      </div>
+                    </>
+                  ) : (
+                    <p className="mt-5 text-sm leading-6 text-black/50">
+                      iBag does not yet have enough recurring transaction evidence to identify an income pattern.
+                    </p>
+                  )}
+
+                </div>
+
+              </div>
+            </section>
+
+
+            {/* ------------------------------------------------------------ */}
+            {/* ROUND-UP INTELLIGENCE                                        */}
+            {/* ------------------------------------------------------------ */}
+
+            <section className="mt-8 rounded-3xl border border-black/10 p-8">
+
+              <EvidenceBadge
+                state={
+                  intelligence?.roundup
+                    ?.evidence_state
+                }
+              />
+
+              <p className="mt-5 text-sm font-medium uppercase tracking-[0.18em] text-black/40">
+                First intelligence domain
+              </p>
+
+              <h2 className="mt-3 text-3xl font-semibold tracking-tight">
+                Round-Up intelligence.
+              </h2>
+
+              <p className="mt-4 max-w-3xl text-base leading-7 text-black/60">
+                iBag is calculating the analytical opportunity created by eligible real-world purchases. Nothing is transferred, saved, or moved.
+              </p>
+
+
+              <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+
+                <div className="rounded-2xl bg-black/[0.03] p-5">
+                  <p className="text-xs text-black/40">
+                    Total opportunity
+                  </p>
+
+                  <p className="mt-2 text-2xl font-semibold">
+                    {money(
+                      roundupOpportunity
                     )}
                   </p>
+                </div>
 
-                  <p className="text-sm text-black/40">
-                    through{" "}
-                    {dateLabel(
-                      data.observation
-                        .latest_transaction_date,
-                    )}
+
+                <div className="rounded-2xl bg-black/[0.03] p-5">
+                  <p className="text-xs text-black/40">
+                    Average
                   </p>
 
+                  <p className="mt-2 text-2xl font-semibold">
+                    {money(
+                      summary.average_roundup
+                    )}
+                  </p>
+                </div>
+
+
+                <div className="rounded-2xl bg-black/[0.03] p-5">
+                  <p className="text-xs text-black/40">
+                    Median
+                  </p>
+
+                  <p className="mt-2 text-2xl font-semibold">
+                    {money(
+                      summary.median_roundup
+                    )}
+                  </p>
+                </div>
+
+
+                <div className="rounded-2xl bg-black/[0.03] p-5">
+                  <p className="text-xs text-black/40">
+                    Largest
+                  </p>
+
+                  <p className="mt-2 text-2xl font-semibold">
+                    {money(
+                      summary.largest_roundup
+                    )}
+                  </p>
                 </div>
 
               </div>
 
             </section>
 
+
+            {/* ------------------------------------------------------------ */}
+            {/* CONCENTRATION                                                */}
+            {/* ------------------------------------------------------------ */}
+
             <section className="mt-8 grid gap-8 lg:grid-cols-2">
 
-              <div className="rounded-3xl border border-black/10 p-6 sm:p-8">
+              <div className="rounded-3xl border border-black/10 p-8">
 
-                <p className="text-sm font-medium text-black/50">
-                  Where your Round-Ups come from
+                <p className="text-sm text-black/50">
+                  Round-Up concentration
                 </p>
 
-                <h2 className="mt-3 text-2xl font-semibold tracking-tight">
-                  Category activity
+                <h2 className="mt-2 text-2xl font-semibold">
+                  Categories generating opportunity
                 </h2>
 
-                {categories.length === 0 ? (
-                  <p className="mt-6 text-sm leading-6 text-black/50">
-                    There is not enough eligible purchase data to show a category pattern yet.
-                  </p>
-                ) : (
-                  <div className="mt-6 space-y-4">
-                    {categories
-                      .slice(0, 6)
-                      .map(
-                        (
-                          category,
-                        ) => (
-                          <div
-                            key={
-                              category.category
-                            }
-                            className="flex items-center justify-between gap-4 border-b border-black/5 pb-4 last:border-0 last:pb-0"
-                          >
+                <div className="mt-6 space-y-5">
+
+                  {data.categories
+                    .slice(0, 8)
+                    .map(
+                      category => (
+                        <div
+                          key={
+                            category.category
+                          }
+                        >
+                          <div className="flex justify-between gap-4">
                             <div>
                               <p className="font-medium">
                                 {
@@ -789,262 +1268,321 @@ export default function DashboardPage() {
                                 }
                               </p>
 
-                              <p className="mt-1 text-sm text-black/40">
+                              <p className="mt-1 text-xs text-black/40">
                                 {
                                   category.purchase_count
                                 }{" "}
-                                eligible{" "}
-                                {category.purchase_count ===
-                                1
-                                  ? "purchase"
-                                  : "purchases"}
+                                purchases
                               </p>
                             </div>
 
                             <p className="font-semibold">
                               {money(
-                                category.roundup_opportunity,
+                                category.roundup_opportunity
                               )}
                             </p>
                           </div>
-                        ),
-                      )}
-                  </div>
-                )}
 
+                          <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-black/[0.06]">
+                            <div
+                              className="h-full rounded-full bg-black"
+                              style={{
+                                width: `${
+                                  roundupOpportunity >
+                                  0
+                                    ? Math.min(
+                                        100,
+                                        (numberValue(
+                                          category.roundup_opportunity
+                                        ) /
+                                          roundupOpportunity) *
+                                          100
+                                      )
+                                    : 0
+                                }%`,
+                              }}
+                            />
+                          </div>
+                        </div>
+                      )
+                    )}
+
+                </div>
               </div>
 
-              <div className="rounded-3xl border border-black/10 p-6 sm:p-8">
 
-                <p className="text-sm font-medium text-black/50">
-                  Merchant activity
+              <div className="rounded-3xl border border-black/10 p-8">
+
+                <p className="text-sm text-black/50">
+                  Observed spending concentration
                 </p>
 
-                <h2 className="mt-3 text-2xl font-semibold tracking-tight">
-                  Where opportunity concentrates
+                <h2 className="mt-2 text-2xl font-semibold">
+                  Where spending is concentrated
                 </h2>
 
-                {merchants.length === 0 ? (
-                  <p className="mt-6 text-sm leading-6 text-black/50">
-                    There is not enough eligible purchase data to identify merchant patterns yet.
-                  </p>
-                ) : (
-                  <div className="mt-6 space-y-4">
-                    {merchants
+                {behavior?.top_categories?.length ? (
+                  <div className="mt-6 space-y-5">
+
+                    {behavior.top_categories
                       .slice(0, 6)
                       .map(
-                        (
-                          merchant,
-                        ) => (
+                        category => (
                           <div
                             key={
-                              merchant.merchant
+                              category.name
                             }
-                            className="flex items-center justify-between gap-4 border-b border-black/5 pb-4 last:border-0 last:pb-0"
+                            className="flex items-center justify-between gap-5"
                           >
-                            <div className="min-w-0">
-                              <p className="truncate font-medium">
+                            <div>
+                              <p className="font-medium">
                                 {
-                                  merchant.merchant
+                                  category.name
                                 }
                               </p>
 
-                              <p className="mt-1 text-sm text-black/40">
+                              <p className="mt-1 text-xs text-black/40">
                                 {
-                                  merchant.purchase_count
+                                  category.transactions
                                 }{" "}
-                                {merchant.purchase_count ===
-                                1
-                                  ? "purchase"
-                                  : "purchases"}{" "}
-                                · avg.{" "}
-                                {money(
-                                  merchant.average_roundup,
-                                )}
+                                transactions
                               </p>
                             </div>
 
-                            <p className="shrink-0 font-semibold">
-                              {money(
-                                merchant.roundup_opportunity,
-                              )}
-                            </p>
+                            <div className="text-right">
+                              <p className="font-semibold">
+                                {money(
+                                  category.spend
+                                )}
+                              </p>
+
+                              <p className="mt-1 text-xs text-black/40">
+                                {(
+                                  category.share *
+                                  100
+                                ).toFixed(
+                                  1
+                                )}
+                                %
+                              </p>
+                            </div>
                           </div>
-                        ),
+                        )
                       )}
+
                   </div>
+                ) : (
+                  <p className="mt-6 text-sm text-black/50">
+                    More posted transaction evidence is required.
+                  </p>
                 )}
 
               </div>
 
             </section>
 
-            <section className="mt-8 rounded-3xl border border-black/10 p-6 sm:p-8">
 
-              <p className="text-sm font-medium text-black/50">
-                What iBag is seeing
-              </p>
+            {/* ------------------------------------------------------------ */}
+            {/* EXPLAINABLE INSIGHTS                                         */}
+            {/* ------------------------------------------------------------ */}
 
-              <h2 className="mt-3 text-2xl font-semibold tracking-tight">
-                Early financial picture
-              </h2>
+            <section className="mt-8 rounded-3xl border border-black/10 p-8">
 
-              {topCategory ? (
-                <div className="mt-5 rounded-2xl bg-black/[0.03] p-5">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
 
-                  <p className="text-base leading-7 text-black/70">
-                    <span className="font-semibold text-black">
-                      {
-                        topCategory.category
-                      }
-                    </span>{" "}
-                    currently produces the largest observed share of your Round-Up opportunity, with{" "}
-                    <span className="font-semibold text-black">
-                      {money(
-                        topCategory.roundup_opportunity,
-                      )}
-                    </span>{" "}
-                    across{" "}
-                    {
-                      topCategory.purchase_count
-                    }{" "}
-                    {topCategory.purchase_count ===
-                    1
-                      ? "eligible purchase"
-                      : "eligible purchases"}.
+                <div>
+                  <p className="text-sm font-medium uppercase tracking-[0.18em] text-black/40">
+                    Explainable intelligence
                   </p>
 
-                  <p className="mt-4 text-sm leading-6 text-black/40">
-                    This is an observation from the currently available transaction history, not a long-term conclusion about your financial behavior.
-                  </p>
-
+                  <h2 className="mt-2 text-3xl font-semibold">
+                    What iBag can responsibly tell you.
+                  </h2>
                 </div>
-              ) : (
-                <p className="mt-5 text-sm leading-6 text-black/50">
-                  More eligible transaction data is needed before iBag can identify a meaningful pattern.
+
+                <p className="text-xs text-black/40">
+                  Every statement is tied to evidence.
                 </p>
-              )}
 
-            </section>
+              </div>
 
-            <section className="mt-8 rounded-3xl border border-black/10 p-6 sm:p-8">
 
-              <p className="text-sm font-medium text-black/50">
-                Recent activity
-              </p>
+              {insights.length ? (
+                <div className="mt-7 grid gap-5 lg:grid-cols-2">
 
-              <h2 className="mt-3 text-2xl font-semibold tracking-tight">
-                Round-Up events
-              </h2>
+                  {insights.map(
+                    insight => (
+                      <article
+                        key={
+                          insight.id
+                        }
+                        className="rounded-2xl bg-black/[0.03] p-6"
+                      >
 
-              {recentRoundups.length === 0 ? (
-                <p className="mt-6 text-sm leading-6 text-black/50">
-                  No Round-Up events are available yet.
-                </p>
-              ) : (
-                <div className="mt-6 divide-y divide-black/5">
-                  {recentRoundups.map(
-                    (
-                      transaction,
-                    ) => {
-                      const currency =
-                        transaction.iso_currency_code ||
-                        "USD";
+                        <div className="flex items-center justify-between gap-4">
 
-                      return (
-                        <div
-                          key={
-                            transaction.id
-                          }
-                          className="flex flex-col gap-3 py-5 first:pt-0 last:pb-0 sm:flex-row sm:items-center sm:justify-between"
-                        >
-                          <div className="min-w-0">
+                          <p className="text-xs font-medium uppercase tracking-[0.16em] text-black/40">
+                            {
+                              insight.type
+                            }
+                          </p>
 
-                            <p className="truncate font-medium">
-                              {transaction.merchant_name ||
-                                "Unknown merchant"}
-                            </p>
+                          <span className="text-xs font-medium text-black/40">
+                            {
+                              insight.confidence
+                            }{" "}
+                            confidence
+                          </span>
 
-                            <p className="mt-1 text-sm text-black/40">
-                              {transaction.category ||
-                                "Uncategorized"}{" "}
-                              ·{" "}
-                              {transaction.pending
-                                ? "Pending"
-                                : dateLabel(
-                                    transaction.posted_date ||
-                                      transaction.authorized_date,
-                                  )}
-                            </p>
-
-                          </div>
-
-                          <div className="shrink-0 sm:text-right">
-
-                            <p className="font-medium">
-                              {money(
-                                transaction.amount,
-                                currency,
-                              )}
-                            </p>
-
-                            <p className="mt-1 text-sm font-medium text-black/50">
-                              +{" "}
-                              {money(
-                                transaction.roundup_amount,
-                                currency,
-                              )}{" "}
-                              opportunity
-                            </p>
-
-                          </div>
                         </div>
-                      );
-                    },
+
+                        <h3 className="mt-4 text-xl font-semibold">
+                          {
+                            insight.title
+                          }
+                        </h3>
+
+                        <p className="mt-3 text-sm leading-6 text-black/60">
+                          {
+                            insight.statement
+                          }
+                        </p>
+
+                        {insight.qualification && (
+                          <p className="mt-4 text-xs leading-5 text-black/40">
+                            {
+                              insight.qualification
+                            }
+                          </p>
+                        )}
+
+                      </article>
+                    )
                   )}
+
+                </div>
+              ) : (
+                <div className="mt-7 rounded-2xl bg-black/[0.03] p-6">
+                  <p className="text-sm leading-6 text-black/50">
+                    iBag has transaction data, but there is not yet enough evidence to generate a responsible higher-order insight.
+                  </p>
                 </div>
               )}
 
             </section>
+
+
+            {/* ------------------------------------------------------------ */}
+            {/* RECENT ROUND-UPS                                             */}
+            {/* ------------------------------------------------------------ */}
+
+            <section className="mt-8 rounded-3xl border border-black/10 p-8">
+
+              <p className="text-sm text-black/50">
+                Underlying evidence
+              </p>
+
+              <h2 className="mt-2 text-2xl font-semibold">
+                Recent Round-Up events
+              </h2>
+
+              <div className="mt-6 divide-y divide-black/5">
+
+                {data.recent_roundups
+                  .map(
+                    event => (
+                      <div
+                        key={
+                          event.id
+                        }
+                        className="flex flex-col gap-3 py-5 first:pt-0 sm:flex-row sm:items-center sm:justify-between"
+                      >
+
+                        <div>
+                          <p className="font-medium">
+                            {event.merchant_name ||
+                              "Unknown merchant"}
+                          </p>
+
+                          <p className="mt-1 text-sm text-black/40">
+                            {event.category ||
+                              "Uncategorized"}{" "}
+                            ·{" "}
+                            {event.pending
+                              ? "Pending"
+                              : dateLabel(
+                                  event.posted_date ||
+                                    event.authorized_date
+                                )}
+                          </p>
+                        </div>
+
+                        <div className="sm:text-right">
+                          <p className="font-medium">
+                            {money(
+                              event.amount,
+                              event.iso_currency_code ||
+                                "USD"
+                            )}
+                          </p>
+
+                          <p className="mt-1 text-sm text-black/50">
+                            +{" "}
+                            {money(
+                              event.roundup_amount,
+                              event.iso_currency_code ||
+                                "USD"
+                            )}{" "}
+                            opportunity
+                          </p>
+                        </div>
+
+                      </div>
+                    )
+                  )}
+
+              </div>
+
+            </section>
+
+
+            {/* ------------------------------------------------------------ */}
+            {/* OBSERVATION WINDOW                                           */}
+            {/* ------------------------------------------------------------ */}
+
+            <section className="mt-8 rounded-3xl border border-black/10 p-6">
+
+              <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+
+                <div>
+                  <p className="text-xs font-medium uppercase tracking-[0.18em] text-black/40">
+                    Observation window
+                  </p>
+
+                  <p className="mt-2 text-sm font-medium">
+                    {dateLabel(
+                      data.observation
+                        .earliest_transaction_date
+                    )}
+                    {" "}
+                    through{" "}
+                    {dateLabel(
+                      data.observation
+                        .latest_transaction_date
+                    )}
+                  </p>
+                </div>
+
+                <p className="max-w-xl text-xs leading-5 text-black/40">
+                  iBag's conclusions are constrained by the financial history actually available from your authorized connections. More history can strengthen or change an observed pattern.
+                </p>
+
+              </div>
+
+            </section>
+
           </>
         )}
-
-        <section className="mt-8 grid gap-6 sm:grid-cols-2">
-
-          <div className="rounded-3xl border border-black/10 p-6">
-
-            <p className="text-sm font-medium text-black/50">
-              Account
-            </p>
-
-            <p className="mt-3 break-all text-base font-medium">
-              {data.user?.email ||
-                "Authenticated iBag user"}
-            </p>
-
-            <p className="mt-2 text-sm text-black/40">
-              Your iBag account
-            </p>
-
-          </div>
-
-          <div className="rounded-3xl border border-black/10 p-6">
-
-            <p className="text-sm font-medium text-black/50">
-              Financial connections
-            </p>
-
-            <p className="mt-3 text-2xl font-semibold">
-              {accounts.length}
-            </p>
-
-            <p className="mt-2 text-sm text-black/40">
-              Active connected accounts
-            </p>
-
-          </div>
-
-        </section>
 
       </div>
     </main>
