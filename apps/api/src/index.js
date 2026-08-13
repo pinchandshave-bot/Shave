@@ -34,7 +34,6 @@ const {
   getSummary,
   getAccounts,
   getTransactions,
-  getRoundups,
   getInsights,
   getNetWorth,
   getIncome,
@@ -80,6 +79,7 @@ const authLimiter = rateLimit({
 
 app.get('/', (req, res) => {
   console.log('GET / hit');
+
   res.json({
     status: 'ok',
     service: 'shave-api',
@@ -88,7 +88,11 @@ app.get('/', (req, res) => {
 });
 
 app.get('/health', (req, res) => {
-  console.log('GET /health hit at', new Date().toISOString());
+  console.log(
+    'GET /health hit at',
+    new Date().toISOString(),
+  );
+
   res.json({
     status: 'ok',
     service: 'shave-api',
@@ -98,6 +102,7 @@ app.get('/health', (req, res) => {
 
 app.get('/db-check', async (req, res) => {
   console.log('GET /db-check hit');
+
   try {
     const result = await pool.query(
       `
@@ -108,7 +113,10 @@ app.get('/db-check', async (req, res) => {
       `,
     );
 
-    console.log('DB check result:', result.rows[0]);
+    console.log(
+      'DB check result:',
+      result.rows[0],
+    );
 
     res.json({
       status: 'ok',
@@ -116,7 +124,10 @@ app.get('/db-check', async (req, res) => {
       user_count: result.rows[0].user_count,
     });
   } catch (err) {
-    console.error('Database check failed:', err);
+    console.error(
+      'Database check failed:',
+      err,
+    );
 
     res.status(500).json({
       status: 'error',
@@ -173,12 +184,6 @@ app.get(
   '/me/transactions',
   requireAuth,
   getTransactions,
-);
-
-app.get(
-  '/me/roundups',
-  requireAuth,
-  getRoundups,
 );
 
 app.get(
