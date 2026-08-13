@@ -18,7 +18,7 @@ async function getMe(req, res) {
         WHERE id = $1
         LIMIT 1
       `,
-      [req.user.id],
+      [req.user.id]
     );
 
     if (userResult.rows.length === 0) {
@@ -40,7 +40,7 @@ async function getMe(req, res) {
         WHERE user_id = $1
         LIMIT 1
       `,
-      [user.id],
+      [user.id]
     );
 
     const accountsResult = await pool.query(
@@ -49,7 +49,6 @@ async function getMe(req, res) {
           a.id,
           a.plaid_account_id,
           a.name,
-          a.official_name,
           a.mask,
           a.type,
           a.subtype,
@@ -67,7 +66,7 @@ async function getMe(req, res) {
           AND p.status = 'active'
         ORDER BY a.created_at ASC
       `,
-      [user.id],
+      [user.id]
     );
 
     return res.json({
@@ -90,49 +89,27 @@ async function getMe(req, res) {
 /**
  * Dashboard financial state.
  *
- * The response shape intentionally matches the current
- * iBag dashboard frontend contract.
+ * Every value comes from the authenticated user's
+ * existing database records.
  *
- * All financial values come from real authenticated-user
- * database records. Nothing is fabricated or seeded.
+ * No fake, mock, seeded, or hard-coded financial data.
  */
 async function getDashboard(req, res) {
   const userId = req.user.id;
 
   try {
     /*
-     * USER
+     * ----------------------------------------------------------------------
+     * ACCOUNTS / BALANCES
+     * ----------------------------------------------------------------------
      */
-    const userResult = await pool.query(
-      `
-        SELECT
-          id,
-          email,
-          created_at
-        FROM users
-        WHERE id = $1
-        LIMIT 1
-      `,
-      [userId],
-    );
 
-    if (userResult.rows.length === 0) {
-      return res.status(404).json({
-        status: 'error',
-        message: 'User not found',
-      });
-    }
-
-    /*
-     * ACCOUNTS
-     */
     const accountsResult = await pool.query(
       `
         SELECT
           a.id,
           a.plaid_account_id,
           a.name,
-          a.official_name,
           a.mask,
           a.type,
           a.subtype,
@@ -140,8 +117,7 @@ async function getDashboard(req, res) {
           a.available_balance,
           a.balance_iso_currency_code,
           a.balance_updated_at,
-          p.institution_name,
-          p.plaid_item_id
+          p.institution_name
         FROM accounts a
         INNER JOIN plaid_items p
           ON p.id = a.plaid_item_id
@@ -149,38 +125,41 @@ async function getDashboard(req, res) {
           AND p.status = 'active'
         ORDER BY a.created_at ASC
       `,
-      [userId],
+      [userId]
     );
 
     /*
-     * TRANSACTION SUMMARY
+     * ----------------------------------------------------------------------
+     * TRANSACTION STATE
+     * ----------------------------------------------------------------------
      */
+
     const transactionStateResult = await pool.query(
       `
         SELECT
           COUNT(*)::int AS transaction_count,
 
           COUNT(*) FILTER (
-            WHERE t.pending = false
-          )::int AS posted_transaction_count,
-
-          COUNT(*) FILTER (
             WHERE t.pending = true
           )::int AS pending_transaction_count,
+
+          COUNT(*) FILTER (
+            WHERE t.pending = false
+          )::int AS posted_transaction_count,
 
           MIN(
             COALESCE(
               t.posted_date,
               t.authorized_date
             )
-          ) AS earliest_transaction_date,
+          ) AS observation_start,
 
           MAX(
             COALESCE(
               t.posted_date,
               t.authorized_date
             )
-          ) AS latest_transaction_date
+          ) AS observation_end
 
         FROM transactions t
 
@@ -194,12 +173,18 @@ async function getDashboard(req, res) {
           AND p.status = 'active'
           AND t.status = 'active'
       `,
-      [userId],
+      [userId]
     );
 
     /*
-     * ROUND-UP SUMMARY
+     * ----------------------------------------------------------------------
+     * ROUND-UP STATE
+     * ----------------------------------------------------------------------
+     *
+     * Analytical opportunity only.
+     * No money is moved.
      */
+
     const roundupStateResult = await pool.query(
       `
         SELECT
@@ -208,7 +193,22 @@ async function getDashboard(req, res) {
           COALESCE(
             SUM(r.roundup_amount),
             0
-          ) AS roundup_opportunity
+          ) AS roundup_opportunity,
+
+          COALESCE(
+            AVG(r.roundup_amount),
+            0
+          ) AS average_roundup,
+
+          COALESCE(
+            MIN(r.roundup_amount),
+            0
+          ) AS smallest_roundup,
+
+          COALESCE(
+            MAX(r.roundup_amount),
+            0
+          ) AS largest_roundup
 
         FROM roundup_events r
 
@@ -228,13 +228,16 @@ async function getDashboard(req, res) {
           AND r.eligible = true
           AND t.status = 'active'
       `,
-      [userId],
+      [userId]
     );
 
     /*
+     * ----------------------------------------------------------------------
      * ROUND-UP BY CATEGORY
+     * ----------------------------------------------------------------------
      */
-    const categoryResult = await pool.query(
+
+    const roundupCategoryResult = await pool.query(
       `
         SELECT
           COALESCE(
@@ -274,15 +277,18 @@ async function getDashboard(req, res) {
           )
 
         ORDER BY
-          SUM(r.roundup_amount) DESC
+          roundup_opportunity DESC
       `,
-      [userId],
+      [userId]
     );
 
     /*
+     * ----------------------------------------------------------------------
      * ROUND-UP BY MERCHANT
+     * ----------------------------------------------------------------------
      */
-    const merchantResult = await pool.query(
+
+    const roundupMerchantResult = await pool.query(
       `
         SELECT
           COALESCE(
@@ -327,31 +333,37 @@ async function getDashboard(req, res) {
           )
 
         ORDER BY
-          SUM(r.roundup_amount) DESC
+          roundup_opportunity DESC
       `,
-      [userId],
+      [userId]
     );
 
     /*
-     * RECENT ROUND-UP EVENTS
-     *
-     * Include the transaction fields expected by
-     * the dashboard frontend.
+     * ----------------------------------------------------------------------
+     * RECENT ROUND-UP ACTIVITY
+     * ----------------------------------------------------------------------
      */
+
     const recentRoundupsResult = await pool.query(
       `
         SELECT
           r.id,
+          r.transaction_id,
           r.roundup_amount,
+          r.transaction_amount,
+          r.eligibility_reason,
           r.rule_version,
 
-          t.amount,
-          t.iso_currency_code,
           t.merchant_name,
           t.category,
+          t.amount,
+          t.iso_currency_code,
           t.pending,
           t.authorized_date,
-          t.posted_date
+          t.posted_date,
+
+          a.name AS account_name,
+          a.mask AS account_mask
 
         FROM roundup_events r
 
@@ -376,66 +388,93 @@ async function getDashboard(req, res) {
             t.posted_date,
             t.authorized_date
           ) DESC NULLS LAST,
+
           t.created_at DESC
 
         LIMIT 10
       `,
-      [userId],
+      [userId]
     );
+
+    /*
+     * ----------------------------------------------------------------------
+     * NORMALIZE STATES
+     * ----------------------------------------------------------------------
+     */
 
     const transactionState =
       transactionStateResult.rows[0] || {
         transaction_count: 0,
-        posted_transaction_count: 0,
         pending_transaction_count: 0,
-        earliest_transaction_date: null,
-        latest_transaction_date: null,
+        posted_transaction_count: 0,
+        observation_start: null,
+        observation_end: null,
       };
 
     const roundupState =
       roundupStateResult.rows[0] || {
         eligible_purchase_count: 0,
         roundup_opportunity: 0,
+        average_roundup: 0,
+        smallest_roundup: 0,
+        largest_roundup: 0,
       };
 
     /*
-     * RETURN EXACTLY WHAT THE DASHBOARD EXPECTS.
+     * ----------------------------------------------------------------------
+     * RETURN DASHBOARD
+     * ----------------------------------------------------------------------
      */
+
     return res.json({
       status: 'ok',
 
-      user: userResult.rows[0],
+      user: null,
 
       observation: {
         earliest_transaction_date:
-          transactionState.earliest_transaction_date,
+          transactionState.observation_start,
 
         latest_transaction_date:
-          transactionState.latest_transaction_date,
+          transactionState.observation_end,
       },
 
-      accounts:
-        accountsResult.rows,
+      data_state: {
+        accounts_available:
+          accountsResult.rows.length > 0,
+
+        transactions_available:
+          Number(
+            transactionState.transaction_count
+          ) > 0,
+
+        roundup_available:
+          Number(
+            roundupState.eligible_purchase_count
+          ) > 0,
+      },
+
+      accounts: accountsResult.rows,
 
       summary: {
         transaction_count:
           Number(
-            transactionState.transaction_count,
+            transactionState.transaction_count
           ),
 
         posted_transaction_count:
           Number(
-            transactionState.posted_transaction_count,
+            transactionState.posted_transaction_count
           ),
 
         pending_transaction_count:
           Number(
-            transactionState.pending_transaction_count,
+            transactionState.pending_transaction_count
           ),
 
         eligible_purchase_count:
           Number(
-            roundupState.eligible_purchase_count,
+            roundupState.eligible_purchase_count
           ),
 
         roundup_opportunity:
@@ -443,24 +482,37 @@ async function getDashboard(req, res) {
       },
 
       categories:
-        categoryResult.rows,
+        roundupCategoryResult.rows,
 
       merchants:
-        merchantResult.rows,
+        roundupMerchantResult.rows,
 
       recent_roundups:
         recentRoundupsResult.rows,
+
+      transaction_state:
+        transactionState,
+
+      roundup:
+        roundupState,
+
+      roundup_by_category:
+        roundupCategoryResult.rows,
+
+      roundup_by_merchant:
+        roundupMerchantResult.rows,
     });
   } catch (err) {
-    console.error(
-      'Get dashboard failed:',
-      err,
-    );
+    console.error('Get dashboard failed:', err);
 
     return res.status(500).json({
       status: 'error',
       message:
-        'The API encountered an internal error while loading your financial picture.',
+        'Unable to load your financial dashboard',
+      detail:
+        process.env.NODE_ENV === 'production'
+          ? undefined
+          : err.message,
     });
   }
 }
@@ -479,16 +531,20 @@ async function getSummary(req, res) {
             SUM(amount),
             0
           ) AS transaction_total
+
         FROM transactions t
+
         INNER JOIN accounts a
           ON a.id = t.account_id
+
         INNER JOIN plaid_items p
           ON p.id = a.plaid_item_id
+
         WHERE p.user_id = $1
           AND p.status = 'active'
           AND t.status = 'active'
       `,
-      [req.user.id],
+      [req.user.id]
     );
 
     return res.json({
@@ -496,10 +552,7 @@ async function getSummary(req, res) {
       summary: result.rows[0],
     });
   } catch (err) {
-    console.error(
-      'Get summary failed:',
-      err,
-    );
+    console.error('Get summary failed:', err);
 
     return res.status(500).json({
       status: 'error',
@@ -521,7 +574,6 @@ async function getAccounts(req, res) {
           a.id,
           a.plaid_account_id,
           a.name,
-          a.official_name,
           a.mask,
           a.type,
           a.subtype,
@@ -531,14 +583,18 @@ async function getAccounts(req, res) {
           a.balance_updated_at,
           p.institution_name,
           p.plaid_item_id
+
         FROM accounts a
+
         INNER JOIN plaid_items p
           ON p.id = a.plaid_item_id
+
         WHERE p.user_id = $1
           AND p.status = 'active'
+
         ORDER BY a.created_at ASC
       `,
-      [req.user.id],
+      [req.user.id]
     );
 
     return res.json({
@@ -546,15 +602,11 @@ async function getAccounts(req, res) {
       accounts: result.rows,
     });
   } catch (err) {
-    console.error(
-      'Get accounts failed:',
-      err,
-    );
+    console.error('Get accounts failed:', err);
 
     return res.status(500).json({
       status: 'error',
-      message:
-        'Unable to load your accounts',
+      message: 'Unable to load your accounts',
     });
   }
 }
@@ -579,22 +631,28 @@ async function getTransactions(req, res) {
           t.authorized_date,
           t.posted_date,
           t.status
+
         FROM transactions t
+
         INNER JOIN accounts a
           ON a.id = t.account_id
+
         INNER JOIN plaid_items p
           ON p.id = a.plaid_item_id
+
         WHERE p.user_id = $1
           AND p.status = 'active'
           AND t.status = 'active'
+
         ORDER BY
           COALESCE(
             t.posted_date,
             t.authorized_date
           ) DESC NULLS LAST,
+
           t.created_at DESC
       `,
-      [req.user.id],
+      [req.user.id]
     );
 
     return res.json({
@@ -604,7 +662,7 @@ async function getTransactions(req, res) {
   } catch (err) {
     console.error(
       'Get transactions failed:',
-      err,
+      err
     );
 
     return res.status(500).json({
@@ -617,80 +675,7 @@ async function getTransactions(req, res) {
 
 
 /**
- * Round-Up events belonging to the authenticated user.
- */
-async function getRoundups(req, res) {
-  try {
-    const result = await pool.query(
-      `
-        SELECT
-          r.id,
-          r.transaction_id,
-          r.roundup_amount,
-          r.transaction_amount,
-          r.eligibility_reason,
-          r.rule_version,
-
-          t.plaid_transaction_id,
-          t.amount,
-          t.iso_currency_code,
-          t.merchant_name,
-          t.category,
-          t.pending,
-          t.authorized_date,
-          t.posted_date
-
-        FROM roundup_events r
-
-        INNER JOIN transactions t
-          ON t.id = r.transaction_id
-
-        INNER JOIN accounts a
-          ON a.id = t.account_id
-
-        INNER JOIN plaid_items p
-          ON p.id = a.plaid_item_id
-
-        WHERE r.user_id = $1
-          AND p.user_id = $1
-          AND p.status = 'active'
-          AND r.status = 'active'
-          AND t.status = 'active'
-
-        ORDER BY
-          COALESCE(
-            t.posted_date,
-            t.authorized_date
-          ) DESC NULLS LAST,
-          t.created_at DESC
-      `,
-      [req.user.id],
-    );
-
-    return res.json({
-      status: 'ok',
-      roundups: result.rows,
-    });
-  } catch (err) {
-    console.error(
-      'Get roundups failed:',
-      err,
-    );
-
-    return res.status(500).json({
-      status: 'error',
-      message:
-        'Unable to load your Round-Up activity',
-    });
-  }
-}
-
-
-/**
  * Insights remain evidence-gated.
- *
- * No insight is fabricated until the intelligence engine
- * produces qualifying evidence.
  */
 async function getInsights(req, res) {
   try {
@@ -701,7 +686,7 @@ async function getInsights(req, res) {
   } catch (err) {
     console.error(
       'Get insights failed:',
-      err,
+      err
     );
 
     return res.status(500).json({
@@ -716,9 +701,8 @@ async function getInsights(req, res) {
 /**
  * Net worth.
  *
- * This name is retained for compatibility.
- * Underlying value is the sum of connected account
- * current balances.
+ * Compatibility endpoint.
+ * Uses connected account current balances.
  */
 async function getNetWorth(req, res) {
   try {
@@ -729,13 +713,16 @@ async function getNetWorth(req, res) {
             SUM(a.current_balance),
             0
           ) AS net_worth
+
         FROM accounts a
+
         INNER JOIN plaid_items p
           ON p.id = a.plaid_item_id
+
         WHERE p.user_id = $1
           AND p.status = 'active'
       `,
-      [req.user.id],
+      [req.user.id]
     );
 
     return res.json({
@@ -746,7 +733,7 @@ async function getNetWorth(req, res) {
   } catch (err) {
     console.error(
       'Get net worth failed:',
-      err,
+      err
     );
 
     return res.status(500).json({
@@ -760,7 +747,7 @@ async function getNetWorth(req, res) {
 
 /**
  * Income remains unavailable until a real
- * income-analysis data path exists.
+ * income-analysis path exists.
  */
 async function getIncome(req, res) {
   try {
@@ -773,7 +760,7 @@ async function getIncome(req, res) {
   } catch (err) {
     console.error(
       'Get income failed:',
-      err,
+      err
     );
 
     return res.status(500).json({
@@ -786,8 +773,8 @@ async function getIncome(req, res) {
 
 
 /**
- * Cash flow remains unavailable until the
- * corresponding real analysis path exists.
+ * Cash flow remains unavailable until a real
+ * analysis path exists.
  */
 async function getCashFlow(req, res) {
   try {
@@ -800,7 +787,7 @@ async function getCashFlow(req, res) {
   } catch (err) {
     console.error(
       'Get cash flow failed:',
-      err,
+      err
     );
 
     return res.status(500).json({
@@ -818,7 +805,6 @@ module.exports = {
   getSummary,
   getAccounts,
   getTransactions,
-  getRoundups,
   getInsights,
   getNetWorth,
   getIncome,
