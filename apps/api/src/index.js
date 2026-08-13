@@ -1,4 +1,3 @@
-```js
 require('dotenv').config();
 
 const express = require('express');
@@ -42,6 +41,15 @@ const {
   getCashFlow,
 } = require('./me');
 
+/*
+ * STARTUP LOGGING
+ */
+
+console.log('Booting Shave API...');
+console.log('Running file:', __filename);
+console.log('NODE_ENV:', process.env.NODE_ENV);
+console.log('PORT (env):', process.env.PORT);
+
 const app = express();
 
 app.use(
@@ -71,6 +79,7 @@ const authLimiter = rateLimit({
  */
 
 app.get('/', (req, res) => {
+  console.log('GET / hit');
   res.json({
     status: 'ok',
     service: 'shave-api',
@@ -79,6 +88,7 @@ app.get('/', (req, res) => {
 });
 
 app.get('/health', (req, res) => {
+  console.log('GET /health hit at', new Date().toISOString());
   res.json({
     status: 'ok',
     service: 'shave-api',
@@ -87,6 +97,7 @@ app.get('/health', (req, res) => {
 });
 
 app.get('/db-check', async (req, res) => {
+  console.log('GET /db-check hit');
   try {
     const result = await pool.query(
       `
@@ -96,6 +107,8 @@ app.get('/db-check', async (req, res) => {
         FROM users
       `,
     );
+
+    console.log('DB check result:', result.rows[0]);
 
     res.json({
       status: 'ok',
@@ -660,4 +673,3 @@ app.listen(PORT, () => {
     `shave-api listening on port ${PORT}`,
   );
 });
-```
