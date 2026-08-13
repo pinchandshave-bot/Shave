@@ -30,6 +30,7 @@ const {
 
 const {
   getMe,
+  getDashboard,
   getSummary,
   getAccounts,
   getTransactions,
@@ -37,11 +38,9 @@ const {
   getNetWorth,
   getIncome,
   getCashFlow,
-  getDashboard,
 } = require('./me');
 
 const app = express();
-
 
 /*
  * --------------------------------------------------------------------------
@@ -60,7 +59,6 @@ app.use(
 app.use(express.json());
 app.use(express.static('public'));
 
-
 /*
  * --------------------------------------------------------------------------
  * AUTHENTICATION RATE LIMITER
@@ -74,11 +72,9 @@ const authLimiter = rateLimit({
   legacyHeaders: false,
   message: {
     status: 'error',
-    message:
-      'Too many attempts. Try again later.',
+    message: 'Too many attempts. Try again later.',
   },
 });
-
 
 /*
  * --------------------------------------------------------------------------
@@ -94,7 +90,6 @@ app.get('/', (req, res) => {
   });
 });
 
-
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
@@ -102,7 +97,6 @@ app.get('/health', (req, res) => {
     time: new Date().toISOString(),
   });
 });
-
 
 app.get('/db-check', async (req, res) => {
   try {
@@ -117,16 +111,11 @@ app.get('/db-check', async (req, res) => {
 
     return res.json({
       status: 'ok',
-      db_time:
-        result.rows[0].db_time,
-      user_count:
-        result.rows[0].user_count,
+      db_time: result.rows[0].db_time,
+      user_count: result.rows[0].user_count,
     });
   } catch (err) {
-    console.error(
-      'Database check failed:',
-      err,
-    );
+    console.error('Database check failed:', err);
 
     return res.status(500).json({
       status: 'error',
@@ -134,7 +123,6 @@ app.get('/db-check', async (req, res) => {
     });
   }
 });
-
 
 /*
  * --------------------------------------------------------------------------
@@ -148,18 +136,22 @@ app.post(
   signup,
 );
 
-
 app.post(
   '/auth/login',
   authLimiter,
   login,
 );
 
-
 /*
  * --------------------------------------------------------------------------
- * AUTHENTICATED USER / FINANCIAL READ ENDPOINTS
+ * AUTHENTICATED USER / DASHBOARD
  * --------------------------------------------------------------------------
+ *
+ * /me
+ *
+ * Core authenticated identity and iBag state.
+ *
+ * Read-only.
  */
 
 app.get(
@@ -168,6 +160,23 @@ app.get(
   getMe,
 );
 
+/*
+ * /me/dashboard
+ *
+ * Primary financial dashboard read layer.
+ *
+ * This endpoint combines only real authenticated-user data:
+ *
+ * - connected accounts
+ * - balances
+ * - transaction state
+ * - Round-Up opportunity
+ * - Round-Up category aggregation
+ * - Round-Up merchant aggregation
+ * - recent Round-Up activity
+ *
+ * It does not create or modify financial data.
+ */
 
 app.get(
   '/me/dashboard',
@@ -175,6 +184,9 @@ app.get(
   getDashboard,
 );
 
+/*
+ * Existing financial summary.
+ */
 
 app.get(
   '/me/summary',
@@ -182,6 +194,9 @@ app.get(
   getSummary,
 );
 
+/*
+ * Connected financial accounts.
+ */
 
 app.get(
   '/me/accounts',
@@ -189,6 +204,9 @@ app.get(
   getAccounts,
 );
 
+/*
+ * Real transactions belonging to the authenticated user.
+ */
 
 app.get(
   '/me/transactions',
@@ -196,6 +214,9 @@ app.get(
   getTransactions,
 );
 
+/*
+ * Evidence-gated intelligence.
+ */
 
 app.get(
   '/me/insights',
@@ -203,6 +224,9 @@ app.get(
   getInsights,
 );
 
+/*
+ * Connected-account balance aggregation.
+ */
 
 app.get(
   '/me/net-worth',
@@ -210,6 +234,9 @@ app.get(
   getNetWorth,
 );
 
+/*
+ * Income analysis.
+ */
 
 app.get(
   '/me/income',
@@ -217,6 +244,9 @@ app.get(
   getIncome,
 );
 
+/*
+ * Cash-flow analysis.
+ */
 
 app.get(
   '/me/cash-flow',
@@ -224,37 +254,36 @@ app.get(
   getCashFlow,
 );
 
-
 /*
  * --------------------------------------------------------------------------
  * PLAID
  * --------------------------------------------------------------------------
  */
 
-
 /*
  * Create a new Plaid Link token.
+ *
+ * Only authenticated users can create a connection.
  */
+
 app.post(
   '/plaid/create-link-token',
   requireAuth,
   async (req, res) => {
     try {
-      const activeCount =
-        await pool.query(
-          `
-            SELECT count(*)
-            FROM plaid_items
-            WHERE status = 'active'
-          `,
-        );
+      const activeCount = await pool.query(
+        `
+          SELECT count(*)
+          FROM plaid_items
+          WHERE status = 'active'
+        `,
+      );
 
       const CAPACITY_LIMIT = 9;
 
       if (
-        Number(
-          activeCount.rows[0].count,
-        ) >= CAPACITY_LIMIT
+        Number(activeCount.rows[0].count) >=
+        CAPACITY_LIMIT
       ) {
         return res.status(503).json({
           status: 'error',
@@ -266,8 +295,7 @@ app.post(
       const response =
         await plaidClient.linkTokenCreate({
           user: {
-            client_user_id:
-              req.user.id,
+            client_user_id: req.user.id,
           },
           client_name: 'iBag',
           products: PLAID_PRODUCTS,
@@ -298,10 +326,11 @@ app.post(
   },
 );
 
-
 /*
- * Create a Plaid update-mode Link token.
+ * Create a Plaid update-mode Link token
+ * for an existing Item.
  */
+
 app.post(
   '/plaid/create-update-link-token',
   requireAuth,
@@ -336,9 +365,7 @@ app.post(
           ],
         );
 
-      if (
-        itemRow.rows.length === 0
-      ) {
+      if (itemRow.rows.length === 0) {
         return res.status(404).json({
           status: 'error',
           message:
@@ -393,10 +420,11 @@ app.post(
   },
 );
 
-
 /*
- * Exchange Plaid public token.
+ * Exchange the Plaid public token for an
+ * access token and persist the Item/accounts.
  */
+
 app.post(
   '/plaid/exchange-public-token',
   requireAuth,
@@ -595,10 +623,11 @@ app.post(
   },
 );
 
-
 /*
- * Re-sync after Plaid update mode.
+ * Re-sync an existing Plaid Item after
+ * an update-mode Link flow.
  */
+
 app.post(
   '/plaid/resync-after-update',
   requireAuth,
@@ -635,9 +664,7 @@ app.post(
           ],
         );
 
-      if (
-        itemRow.rows.length === 0
-      ) {
+      if (itemRow.rows.length === 0) {
         return res.status(404).json({
           status: 'error',
           message:
@@ -668,7 +695,6 @@ app.post(
   },
 );
 
-
 /*
  * --------------------------------------------------------------------------
  * INTERNAL SYNCHRONIZATION
@@ -680,7 +706,6 @@ app.post(
   requireInternalSecret,
   runSync,
 );
-
 
 /*
  * --------------------------------------------------------------------------
@@ -695,7 +720,6 @@ app.use((req, res) => {
   });
 });
 
-
 /*
  * --------------------------------------------------------------------------
  * GLOBAL ERROR HANDLER
@@ -709,14 +733,13 @@ app.use(
       err,
     );
 
-    res.status(500).json({
+    return res.status(500).json({
       status: 'error',
       message:
         'Internal server error',
     });
   },
 );
-
 
 /*
  * --------------------------------------------------------------------------
