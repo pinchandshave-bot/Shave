@@ -59,6 +59,7 @@ type RecentRoundup = {
 
 type DashboardData = {
   status: "ok";
+
   user?: {
     id: string;
     email: string;
@@ -81,7 +82,9 @@ type DashboardData = {
   };
 
   categories: Category[];
+
   merchants: Merchant[];
+
   recent_roundups: RecentRoundup[];
 };
 
@@ -126,22 +129,15 @@ function dateLabel(
     `${value}T00:00:00`,
   );
 
-  if (
-    Number.isNaN(
-      date.getTime(),
-    )
-  ) {
+  if (Number.isNaN(date.getTime())) {
     return value;
   }
 
-  return new Intl.DateTimeFormat(
-    "en-US",
-    {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-    },
-  ).format(date);
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(date);
 }
 
 function apiErrorMessage(
@@ -152,8 +148,16 @@ function apiErrorMessage(
     return "Your session has expired. Please sign in again.";
   }
 
+  if (status === 403) {
+    return "The API rejected this dashboard request.";
+  }
+
   if (status === 404) {
     return "The dashboard endpoint is not available on the current API deployment.";
+  }
+
+  if (status === 500) {
+    return "The API encountered an internal error while loading your financial picture.";
   }
 
   if (
@@ -177,7 +181,7 @@ export default function DashboardPage() {
     useState(true);
 
   const [error, setError] =
-    useState<string>("");
+    useState("");
 
   const [httpStatus, setHttpStatus] =
     useState<number | null>(null);
@@ -200,11 +204,6 @@ export default function DashboardPage() {
             )
           : null;
 
-      /*
-       * Authentication is determined by the
-       * actual API token, not by localStorage
-       * user/profile objects.
-       */
       if (!token) {
         router.replace(
           "/start/signin",
@@ -214,16 +213,11 @@ export default function DashboardPage() {
       }
 
       try {
-        /*
-         * IMPORTANT:
-         *
-         * The dashboard talks directly to the
-         * dashboard read endpoint.
-         *
-         * It does NOT call /me first.
-         * It does NOT reconstruct the dashboard
-         * from multiple endpoints.
-         */
+        console.log(
+          "Loading iBag dashboard:",
+          `${API_URL}/me/dashboard`,
+        );
+
         const response =
           await fetch(
             `${API_URL}/me/dashboard`,
@@ -233,6 +227,7 @@ export default function DashboardPage() {
               headers: {
                 Authorization:
                   `Bearer ${token}`,
+
                 Accept:
                   "application/json",
               },
@@ -243,6 +238,16 @@ export default function DashboardPage() {
 
         const responseText =
           await response.text();
+
+        console.log(
+          "Dashboard API HTTP status:",
+          response.status,
+        );
+
+        console.log(
+          "Dashboard API response:",
+          responseText,
+        );
 
         let body:
           | DashboardData
@@ -263,6 +268,13 @@ export default function DashboardPage() {
             };
           }
         }
+
+        /*
+         * Authentication failure.
+         *
+         * Remove only the authentication
+         * state and return to sign-in.
+         */
 
         if (
           response.status === 401
@@ -286,9 +298,21 @@ export default function DashboardPage() {
           return;
         }
 
-        if (
-          !response.ok
-        ) {
+        /*
+         * IMPORTANT:
+         *
+         * Preserve the actual HTTP status so
+         * the dashboard tells us exactly what
+         * the API returned.
+         */
+
+        if (!response.ok) {
+          if (!cancelled) {
+            setHttpStatus(
+              response.status,
+            );
+          }
+
           throw new Error(
             apiErrorMessage(
               response.status,
@@ -297,10 +321,14 @@ export default function DashboardPage() {
           );
         }
 
+        /*
+         * The dashboard endpoint must return
+         * { status: "ok", ... }
+         */
+
         if (
           !body ||
-          body.status !==
-            "ok"
+          body.status !== "ok"
         ) {
           throw new Error(
             "The API returned an invalid dashboard response.",
@@ -407,6 +435,10 @@ export default function DashboardPage() {
       [categories],
     );
 
+  /*
+   * LOADING
+   */
+
   if (loading) {
     return (
       <main className="min-h-screen bg-white text-black">
@@ -439,6 +471,10 @@ export default function DashboardPage() {
       </main>
     );
   }
+
+  /*
+   * ERROR
+   */
 
   if (error || !data) {
     return (
@@ -476,10 +512,15 @@ export default function DashboardPage() {
             </p>
 
             {httpStatus !== null && (
-              <p className="mt-3 text-xs text-black/30">
-                API response: HTTP{" "}
-                {httpStatus}
-              </p>
+              <div className="mt-4 rounded-2xl bg-black/[0.03] px-5 py-4">
+                <p className="text-xs font-medium uppercase tracking-[0.15em] text-black/40">
+                  API response
+                </p>
+
+                <p className="mt-2 text-lg font-semibold">
+                  HTTP {httpStatus}
+                </p>
+              </div>
             )}
 
             <div className="mt-7 flex flex-col items-center justify-center gap-3 sm:flex-row">
@@ -507,6 +548,10 @@ export default function DashboardPage() {
     );
   }
 
+  /*
+   * DASHBOARD
+   */
+
   return (
     <main className="min-h-screen bg-white text-black">
       <header className="flex items-center justify-between border-b border-black/10 px-6 py-6 sm:px-10">
@@ -527,6 +572,7 @@ export default function DashboardPage() {
       </header>
 
       <div className="mx-auto w-full max-w-6xl px-6 py-12 sm:px-10 sm:py-16">
+
         <section>
           <p className="text-sm font-medium uppercase tracking-[0.25em] text-black/40">
             Your iBag
@@ -542,6 +588,7 @@ export default function DashboardPage() {
         </section>
 
         <section className="mt-12 grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
+
           <div className="rounded-3xl border border-black/10 p-6">
             <p className="text-sm font-medium text-black/50">
               Connected accounts
@@ -599,10 +646,12 @@ export default function DashboardPage() {
               Calculated from eligible purchases
             </p>
           </div>
+
         </section>
 
         {!hasAccounts && (
           <section className="mt-8 rounded-3xl border border-black/10 p-6 sm:p-8">
+
             <p className="text-sm font-medium text-black/50">
               Financial picture
             </p>
@@ -621,12 +670,14 @@ export default function DashboardPage() {
             >
               Connect financial accounts
             </Link>
+
           </section>
         )}
 
         {hasAccounts &&
           !hasTransactions && (
             <section className="mt-8 rounded-3xl border border-black/10 p-6 sm:p-8">
+
               <p className="text-sm font-medium text-black/50">
                 Early picture
               </p>
@@ -638,14 +689,18 @@ export default function DashboardPage() {
               <p className="mt-4 max-w-3xl text-base leading-7 text-black/60">
                 iBag has not received transaction activity to analyze yet. No financial conclusions are being generated until real transaction data is available.
               </p>
+
             </section>
-          )}
+        )}
 
         {hasTransactions && (
           <>
             <section className="mt-8 rounded-3xl border border-black/10 p-6 sm:p-8">
+
               <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+
                 <div className="max-w-3xl">
+
                   <p className="text-sm font-medium text-black/50">
                     Round-Up intelligence
                   </p>
@@ -667,9 +722,11 @@ export default function DashboardPage() {
                   <p className="mt-4 text-sm leading-6 text-black/40">
                     Round-Up opportunity is an analytical value. It is not money that has been saved, transferred, or moved.
                   </p>
+
                 </div>
 
                 <div className="shrink-0 rounded-2xl bg-black/[0.03] px-5 py-4">
+
                   <p className="text-xs font-medium uppercase tracking-[0.15em] text-black/40">
                     Observation window
                   </p>
@@ -688,12 +745,17 @@ export default function DashboardPage() {
                         .latest_transaction_date,
                     )}
                   </p>
+
                 </div>
+
               </div>
+
             </section>
 
             <section className="mt-8 grid gap-8 lg:grid-cols-2">
+
               <div className="rounded-3xl border border-black/10 p-6 sm:p-8">
+
                 <p className="text-sm font-medium text-black/50">
                   Where your Round-Ups come from
                 </p>
@@ -702,8 +764,7 @@ export default function DashboardPage() {
                   Category activity
                 </h2>
 
-                {categories.length ===
-                0 ? (
+                {categories.length === 0 ? (
                   <p className="mt-6 text-sm leading-6 text-black/50">
                     There is not enough eligible purchase data to show a category pattern yet.
                   </p>
@@ -750,9 +811,11 @@ export default function DashboardPage() {
                       )}
                   </div>
                 )}
+
               </div>
 
               <div className="rounded-3xl border border-black/10 p-6 sm:p-8">
+
                 <p className="text-sm font-medium text-black/50">
                   Merchant activity
                 </p>
@@ -761,8 +824,7 @@ export default function DashboardPage() {
                   Where opportunity concentrates
                 </h2>
 
-                {merchants.length ===
-                0 ? (
+                {merchants.length === 0 ? (
                   <p className="mt-6 text-sm leading-6 text-black/50">
                     There is not enough eligible purchase data to identify merchant patterns yet.
                   </p>
@@ -812,10 +874,13 @@ export default function DashboardPage() {
                       )}
                   </div>
                 )}
+
               </div>
+
             </section>
 
             <section className="mt-8 rounded-3xl border border-black/10 p-6 sm:p-8">
+
               <p className="text-sm font-medium text-black/50">
                 What iBag is seeing
               </p>
@@ -826,6 +891,7 @@ export default function DashboardPage() {
 
               {topCategory ? (
                 <div className="mt-5 rounded-2xl bg-black/[0.03] p-5">
+
                   <p className="text-base leading-7 text-black/70">
                     <span className="font-semibold text-black">
                       {
@@ -851,15 +917,18 @@ export default function DashboardPage() {
                   <p className="mt-4 text-sm leading-6 text-black/40">
                     This is an observation from the currently available transaction history, not a long-term conclusion about your financial behavior.
                   </p>
+
                 </div>
               ) : (
                 <p className="mt-5 text-sm leading-6 text-black/50">
                   More eligible transaction data is needed before iBag can identify a meaningful pattern.
                 </p>
               )}
+
             </section>
 
             <section className="mt-8 rounded-3xl border border-black/10 p-6 sm:p-8">
+
               <p className="text-sm font-medium text-black/50">
                 Recent activity
               </p>
@@ -868,8 +937,7 @@ export default function DashboardPage() {
                 Round-Up events
               </h2>
 
-              {recentRoundups.length ===
-              0 ? (
+              {recentRoundups.length === 0 ? (
                 <p className="mt-6 text-sm leading-6 text-black/50">
                   No Round-Up events are available yet.
                 </p>
@@ -891,6 +959,7 @@ export default function DashboardPage() {
                           className="flex flex-col gap-3 py-5 first:pt-0 last:pb-0 sm:flex-row sm:items-center sm:justify-between"
                         >
                           <div className="min-w-0">
+
                             <p className="truncate font-medium">
                               {transaction.merchant_name ||
                                 "Unknown merchant"}
@@ -907,9 +976,11 @@ export default function DashboardPage() {
                                       transaction.authorized_date,
                                   )}
                             </p>
+
                           </div>
 
                           <div className="shrink-0 sm:text-right">
+
                             <p className="font-medium">
                               {money(
                                 transaction.amount,
@@ -925,6 +996,7 @@ export default function DashboardPage() {
                               )}{" "}
                               opportunity
                             </p>
+
                           </div>
                         </div>
                       );
@@ -932,12 +1004,15 @@ export default function DashboardPage() {
                   )}
                 </div>
               )}
+
             </section>
           </>
         )}
 
         <section className="mt-8 grid gap-6 sm:grid-cols-2">
+
           <div className="rounded-3xl border border-black/10 p-6">
+
             <p className="text-sm font-medium text-black/50">
               Account
             </p>
@@ -950,9 +1025,11 @@ export default function DashboardPage() {
             <p className="mt-2 text-sm text-black/40">
               Your iBag account
             </p>
+
           </div>
 
           <div className="rounded-3xl border border-black/10 p-6">
+
             <p className="text-sm font-medium text-black/50">
               Financial connections
             </p>
@@ -964,8 +1041,11 @@ export default function DashboardPage() {
             <p className="mt-2 text-sm text-black/40">
               Active connected accounts
             </p>
+
           </div>
+
         </section>
+
       </div>
     </main>
   );
