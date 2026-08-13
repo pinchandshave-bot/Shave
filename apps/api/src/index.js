@@ -1,3 +1,4 @@
+```js
 require('dotenv').config();
 
 const express = require('express');
@@ -30,6 +31,7 @@ const {
 
 const {
   getMe,
+  getDashboard,
   getSummary,
   getAccounts,
   getTransactions,
@@ -42,13 +44,6 @@ const {
 
 const app = express();
 
-/*
- * CORS
- *
- * The frontend origin is supplied by Render environment variables.
- * FRONTEND_ORIGIN is optional because the production frontend has
- * a safe fallback.
- */
 app.use(
   cors({
     origin:
@@ -60,9 +55,6 @@ app.use(
 app.use(express.json());
 app.use(express.static('public'));
 
-/*
- * Authentication rate limiter.
- */
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 8,
@@ -75,9 +67,7 @@ const authLimiter = rateLimit({
 });
 
 /*
- * --------------------------------------------------------------------------
  * SERVICE / HEALTH
- * --------------------------------------------------------------------------
  */
 
 app.get('/', (req, res) => {
@@ -123,9 +113,7 @@ app.get('/db-check', async (req, res) => {
 });
 
 /*
- * --------------------------------------------------------------------------
  * AUTHENTICATION
- * --------------------------------------------------------------------------
  */
 
 app.post(
@@ -141,24 +129,19 @@ app.post(
 );
 
 /*
- * --------------------------------------------------------------------------
  * AUTHENTICATED USER / DASHBOARD
- * --------------------------------------------------------------------------
- *
- * /me is the primary authenticated identity/state endpoint.
- *
- * The frontend uses this after authentication to determine:
- * - who the user is
- * - which iBag belongs to them
- * - which financial accounts are currently connected
- *
- * It does not create or modify financial data.
  */
 
 app.get(
   '/me',
   requireAuth,
   getMe,
+);
+
+app.get(
+  '/me/dashboard',
+  requireAuth,
+  getDashboard,
 );
 
 app.get(
@@ -210,16 +193,9 @@ app.get(
 );
 
 /*
- * --------------------------------------------------------------------------
  * PLAID
- * --------------------------------------------------------------------------
  */
 
-/*
- * Create a new Plaid Link token.
- *
- * Only authenticated users can create a connection.
- */
 app.post(
   '/plaid/create-link-token',
   requireAuth,
@@ -280,10 +256,6 @@ app.post(
   },
 );
 
-/*
- * Create a Plaid update-mode Link token for an
- * existing Item.
- */
 app.post(
   '/plaid/create-update-link-token',
   requireAuth,
@@ -373,10 +345,6 @@ app.post(
   },
 );
 
-/*
- * Exchange the Plaid public token for an
- * access token and persist the Item/accounts.
- */
 app.post(
   '/plaid/exchange-public-token',
   requireAuth,
@@ -396,11 +364,9 @@ app.post(
       }
 
       const exchangeRes =
-        await plaidClient.itemPublicTokenExchange(
-          {
-            public_token,
-          },
-        );
+        await plaidClient.itemPublicTokenExchange({
+          public_token,
+        });
 
       const access_token =
         exchangeRes.data.access_token;
@@ -575,10 +541,6 @@ app.post(
   },
 );
 
-/*
- * Re-sync an existing Plaid Item after
- * an update-mode Link flow.
- */
 app.post(
   '/plaid/resync-after-update',
   requireAuth,
@@ -647,9 +609,7 @@ app.post(
 );
 
 /*
- * --------------------------------------------------------------------------
  * INTERNAL SYNCHRONIZATION
- * --------------------------------------------------------------------------
  */
 
 app.post(
@@ -659,9 +619,7 @@ app.post(
 );
 
 /*
- * --------------------------------------------------------------------------
  * 404
- * --------------------------------------------------------------------------
  */
 
 app.use((req, res) => {
@@ -672,9 +630,7 @@ app.use((req, res) => {
 });
 
 /*
- * --------------------------------------------------------------------------
  * GLOBAL ERROR HANDLER
- * --------------------------------------------------------------------------
  */
 
 app.use(
@@ -693,9 +649,7 @@ app.use(
 );
 
 /*
- * --------------------------------------------------------------------------
  * SERVER
- * --------------------------------------------------------------------------
  */
 
 const PORT =
@@ -706,3 +660,4 @@ app.listen(PORT, () => {
     `shave-api listening on port ${PORT}`,
   );
 });
+```
