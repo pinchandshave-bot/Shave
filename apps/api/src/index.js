@@ -28,17 +28,59 @@ const {
   syncOneItem,
 } = require('./sync');
 
+const me = require('./me');
+
 const {
   getMe,
   getDashboard,
   getSummary,
   getAccounts,
   getTransactions,
+  getRoundups,
   getInsights,
   getNetWorth,
   getIncome,
   getCashFlow,
-} = require('./me');
+} = me;
+
+/*
+ * STARTUP VALIDATION
+ *
+ * Express requires every route handler to be
+ * an actual function. Validate our imported
+ * handlers before registering routes so a
+ * missing export produces a useful error.
+ */
+
+const requiredHandlers = {
+  requireAuth,
+  requireInternalSecret,
+  signup,
+  login,
+  runSync,
+  syncOneItem,
+
+  getMe,
+  getDashboard,
+  getSummary,
+  getAccounts,
+  getTransactions,
+  getRoundups,
+  getInsights,
+  getNetWorth,
+  getIncome,
+  getCashFlow,
+};
+
+for (const [name, handler] of Object.entries(
+  requiredHandlers,
+)) {
+  if (typeof handler !== 'function') {
+    throw new Error(
+      `Startup configuration error: "${name}" from ./me or ./auth or ./sync is not exported as a function.`,
+    );
+  }
+}
 
 /*
  * STARTUP LOGGING
@@ -48,6 +90,10 @@ console.log('Booting Shave API...');
 console.log('Running file:', __filename);
 console.log('NODE_ENV:', process.env.NODE_ENV);
 console.log('PORT (env):', process.env.PORT);
+
+/*
+ * APP
+ */
 
 const app = express();
 
@@ -60,7 +106,12 @@ app.use(
 );
 
 app.use(express.json());
+
 app.use(express.static('public'));
+
+/*
+ * AUTH RATE LIMITING
+ */
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -187,6 +238,12 @@ app.get(
 );
 
 app.get(
+  '/me/roundups',
+  requireAuth,
+  getRoundups,
+);
+
+app.get(
   '/me/insights',
   requireAuth,
   getInsights,
@@ -245,9 +302,13 @@ app.post(
           user: {
             client_user_id: req.user.id,
           },
+
           client_name: 'iBag',
+
           products: PLAID_PRODUCTS,
+
           country_codes: ['US'],
+
           language: 'en',
         });
 
@@ -273,6 +334,10 @@ app.post(
     }
   },
 );
+
+/*
+ * PLAID UPDATE LINK
+ */
 
 app.post(
   '/plaid/create-update-link-token',
@@ -328,15 +393,20 @@ app.post(
             client_user_id:
               req.user.id,
           },
+
           client_name: 'iBag',
+
           access_token:
             accessToken,
+
           additional_consented_products: [
             'liabilities',
             'investments',
             'identity',
           ],
+
           country_codes: ['US'],
+
           language: 'en',
         });
 
@@ -362,6 +432,10 @@ app.post(
     }
   },
 );
+
+/*
+ * PLAID PUBLIC TOKEN EXCHANGE
+ */
 
 app.post(
   '/plaid/exchange-public-token',
@@ -499,6 +573,10 @@ app.post(
         );
       }
 
+      /*
+       * Immediate transaction synchronization.
+       */
+
       let immediateSyncResult =
         null;
 
@@ -534,10 +612,13 @@ app.post(
 
       return res.json({
         status: 'ok',
+
         plaid_item_id,
+
         accounts_stored:
           accountsRes.data.accounts
             .length,
+
         immediate_sync:
           immediateSyncResult,
       });
@@ -558,6 +639,10 @@ app.post(
     }
   },
 );
+
+/*
+ * PLAID RESYNC AFTER UPDATE
+ */
 
 app.post(
   '/plaid/resync-after-update',
