@@ -30,23 +30,17 @@ const {
 
 const me = require('./me');
 
-/*
- * STARTUP LOGGING
- */
+const {
+  getFinancialIntelligence,
+} = require('./intelligence');
 
-console.log('Booting Shave API...');
+
+console.log('Booting iBag API...');
 console.log('Running file:', __filename);
 console.log('NODE_ENV:', process.env.NODE_ENV);
 console.log('PORT (env):', process.env.PORT);
 
-/*
- * REQUIRED HANDLERS
- *
- * These are the handlers the current frontend/API contract
- * actually depends on.
- *
- * Do not invent missing exports.
- */
+
 const requiredHandlers = {
   requireAuth,
   requireInternalSecret,
@@ -54,153 +48,224 @@ const requiredHandlers = {
   login,
   runSync,
   syncOneItem,
-  getDashboard: me.getDashboard,
+  getDashboard:
+    me.getDashboard,
+  getFinancialIntelligence,
 };
 
-for (const [name, handler] of Object.entries(requiredHandlers)) {
-  if (typeof handler !== 'function') {
+
+for (
+  const [
+    name,
+    handler,
+  ] of Object.entries(
+    requiredHandlers
+  )
+) {
+  if (
+    typeof handler !==
+    'function'
+  ) {
     throw new Error(
       `Startup configuration error: "${name}" is not exported as a function.`
     );
   }
 }
 
-/*
- * OPTIONAL READ HANDLERS
- *
- * Some versions of me.js may not expose every read endpoint.
- * An absent optional handler must not prevent the API from starting.
- */
+
 const optionalHandlers = {
   getMe: me.getMe,
   getSummary: me.getSummary,
   getAccounts: me.getAccounts,
-  getTransactions: me.getTransactions,
-  getRoundups: me.getRoundups,
-  getInsights: me.getInsights,
-  getNetWorth: me.getNetWorth,
-  getIncome: me.getIncome,
-  getCashFlow: me.getCashFlow,
+  getTransactions:
+    me.getTransactions,
+  getRoundups:
+    me.getRoundups,
+  getInsights:
+    me.getInsights,
+  getNetWorth:
+    me.getNetWorth,
+  getIncome:
+    me.getIncome,
+  getCashFlow:
+    me.getCashFlow,
 };
 
-for (const [name, handler] of Object.entries(optionalHandlers)) {
+
+for (
+  const [
+    name,
+    handler,
+  ] of Object.entries(
+    optionalHandlers
+  )
+) {
   console.log(
     `${name}:`,
-    typeof handler === 'function'
+    typeof handler ===
+      'function'
       ? 'available'
       : 'not exported'
   );
 }
 
-const app = express();
+
+const app =
+  express();
+
 
 app.use(
   cors({
     origin:
-      process.env.FRONTEND_ORIGIN ||
+      process.env
+        .FRONTEND_ORIGIN ||
       'https://shave.onrender.com',
-  }),
+  })
 );
 
-app.use(express.json());
-app.use(express.static('public'));
 
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 8,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: {
-    status: 'error',
-    message: 'Too many attempts. Try again later.',
-  },
-});
+app.use(
+  express.json()
+);
 
-/*
- * Helper for optional GET handlers.
- *
- * If a handler does not exist in the current me.js,
- * the API remains alive and that specific route returns
- * a clear 501 response rather than crashing the server.
- */
-function registerOptionalGet(path, handler) {
-  if (typeof handler === 'function') {
-    app.get(path, requireAuth, handler);
+
+app.use(
+  express.static(
+    'public'
+  )
+);
+
+
+const authLimiter =
+  rateLimit({
+    windowMs:
+      15 * 60 * 1000,
+
+    max: 8,
+
+    standardHeaders:
+      true,
+
+    legacyHeaders:
+      false,
+
+    message: {
+      status: 'error',
+      message:
+        'Too many attempts. Try again later.',
+    },
+  });
+
+
+function registerOptionalGet(
+  path,
+  handler
+) {
+  if (
+    typeof handler ===
+    'function'
+  ) {
+    app.get(
+      path,
+      requireAuth,
+      handler
+    );
+
     return;
   }
 
-  app.get(path, requireAuth, (req, res) => {
-    res.status(501).json({
-      status: 'error',
-      message: `The endpoint ${path} is not implemented by the current API read module.`,
-    });
-  });
+  app.get(
+    path,
+    requireAuth,
+    (req, res) => {
+      res.status(501).json({
+        status: 'error',
+        message:
+          `The endpoint ${path} is not implemented by the current API read module.`,
+      });
+    }
+  );
 }
 
-/*
- * SERVICE / HEALTH
- */
 
-app.get('/', (req, res) => {
-  console.log('GET / hit');
+/* -------------------------------------------------------------------------- */
+/* SERVICE                                                                    */
+/* -------------------------------------------------------------------------- */
 
-  res.json({
-    status: 'ok',
-    service: 'shave-api',
-    message: 'Shave API is running',
-  });
-});
-
-app.get('/health', (req, res) => {
-  console.log(
-    'GET /health hit at',
-    new Date().toISOString()
-  );
-
-  res.json({
-    status: 'ok',
-    service: 'shave-api',
-    time: new Date().toISOString(),
-  });
-});
-
-app.get('/db-check', async (req, res) => {
-  console.log('GET /db-check hit');
-
-  try {
-    const result = await pool.query(`
-      SELECT
-        now() AS db_time,
-        count(*) AS user_count
-      FROM users
-    `);
-
-    console.log(
-      'DB check result:',
-      result.rows[0]
-    );
-
+app.get(
+  '/',
+  (req, res) => {
     res.json({
       status: 'ok',
-      db_time: result.rows[0].db_time,
-      user_count: result.rows[0].user_count,
-    });
-  } catch (err) {
-    console.error(
-      'Database check failed:',
-      err
-    );
-
-    res.status(500).json({
-      status: 'error',
-      message: err.message,
+      service: 'ibag-api',
+      message:
+        'iBag financial intelligence API is running',
     });
   }
-});
+);
 
-/*
- * AUTHENTICATION
- */
+
+app.get(
+  '/health',
+  (req, res) => {
+    res.json({
+      status: 'ok',
+      service: 'ibag-api',
+      time:
+        new Date()
+          .toISOString(),
+    });
+  }
+);
+
+
+app.get(
+  '/db-check',
+  async (
+    req,
+    res
+  ) => {
+    try {
+      const result =
+        await pool.query(
+          `
+            SELECT
+              now()
+                AS db_time,
+              count(*)
+                AS user_count
+            FROM users
+          `
+        );
+
+      res.json({
+        status: 'ok',
+        db_time:
+          result.rows[0]
+            .db_time,
+        user_count:
+          result.rows[0]
+            .user_count,
+      });
+    } catch (err) {
+      console.error(
+        'Database check failed:',
+        err
+      );
+
+      res.status(500).json({
+        status: 'error',
+        message:
+          err.message,
+      });
+    }
+  }
+);
+
+
+/* -------------------------------------------------------------------------- */
+/* AUTH                                                                       */
+/* -------------------------------------------------------------------------- */
 
 app.post(
   '/auth/signup',
@@ -208,26 +273,64 @@ app.post(
   signup
 );
 
+
 app.post(
   '/auth/login',
   authLimiter,
   login
 );
 
-/*
- * AUTHENTICATED USER / DASHBOARD
- */
+
+/* -------------------------------------------------------------------------- */
+/* USER / INTELLIGENCE                                                        */
+/* -------------------------------------------------------------------------- */
 
 registerOptionalGet(
   '/me',
   optionalHandlers.getMe
 );
 
+
 app.get(
   '/me/dashboard',
   requireAuth,
   me.getDashboard
 );
+
+
+app.get(
+  '/me/intelligence',
+  requireAuth,
+  async (
+    req,
+    res
+  ) => {
+    try {
+      const result =
+        await getFinancialIntelligence(
+          req.user.id
+        );
+
+      return res.json({
+        status: 'ok',
+        intelligence:
+          result,
+      });
+    } catch (err) {
+      console.error(
+        'Financial intelligence failed:',
+        err
+      );
+
+      return res.status(500).json({
+        status: 'error',
+        message:
+          'Unable to calculate financial intelligence',
+      });
+    }
+  }
+);
+
 
 registerOptionalGet(
   '/me/summary',
@@ -269,49 +372,73 @@ registerOptionalGet(
   optionalHandlers.getCashFlow
 );
 
-/*
- * PLAID
- */
+
+/* -------------------------------------------------------------------------- */
+/* PLAID                                                                      */
+/* -------------------------------------------------------------------------- */
 
 app.post(
   '/plaid/create-link-token',
   requireAuth,
-  async (req, res) => {
+  async (
+    req,
+    res
+  ) => {
     try {
-      const activeCount = await pool.query(`
-        SELECT count(*)
-        FROM plaid_items
-        WHERE status = 'active'
-      `);
+      const activeCount =
+        await pool.query(
+          `
+            SELECT
+              count(*)
+            FROM plaid_items
+            WHERE status = 'active'
+          `
+        );
 
       const CAPACITY_LIMIT = 9;
 
       if (
-        Number(activeCount.rows[0].count) >=
+        Number(
+          activeCount
+            .rows[0]
+            .count
+        ) >=
         CAPACITY_LIMIT
       ) {
         return res.status(503).json({
           status: 'error',
           message:
-            'Shave is at capacity for new bank connections right now. Try again soon.',
+            'iBag is at capacity for new bank connections right now. Try again soon.',
         });
       }
 
       const response =
-        await plaidClient.linkTokenCreate({
-          user: {
-            client_user_id: req.user.id,
-          },
-          client_name: 'iBag',
-          products: PLAID_PRODUCTS,
-          country_codes: ['US'],
-          language: 'en',
-        });
+        await plaidClient
+          .linkTokenCreate({
+            user: {
+              client_user_id:
+                req.user.id,
+            },
+
+            client_name:
+              'iBag',
+
+            products:
+              PLAID_PRODUCTS,
+
+            country_codes:
+              ['US'],
+
+            language:
+              'en',
+          });
 
       return res.json({
         status: 'ok',
+
         link_token:
-          response.data.link_token,
+          response.data
+            .link_token,
       });
     } catch (err) {
       console.error(
@@ -321,6 +448,7 @@ app.post(
 
       return res.status(500).json({
         status: 'error',
+
         detail:
           err.response?.data ||
           err.message,
@@ -329,10 +457,14 @@ app.post(
   }
 );
 
+
 app.post(
   '/plaid/create-update-link-token',
   requireAuth,
-  async (req, res) => {
+  async (
+    req,
+    res
+  ) => {
     try {
       const {
         plaid_item_id,
@@ -352,9 +484,15 @@ app.post(
             SELECT
               id,
               plaid_access_token_encrypted
+
             FROM plaid_items
-            WHERE plaid_item_id = $1
-              AND user_id = $2
+
+            WHERE plaid_item_id =
+              $1
+
+              AND user_id =
+              $2
+
             LIMIT 1
           `,
           [
@@ -363,7 +501,10 @@ app.post(
           ]
         );
 
-      if (itemRow.rows.length === 0) {
+      if (
+        itemRow.rows.length ===
+        0
+      ) {
         return res.status(404).json({
           status: 'error',
           message:
@@ -378,27 +519,39 @@ app.post(
         );
 
       const response =
-        await plaidClient.linkTokenCreate({
-          user: {
-            client_user_id:
-              req.user.id,
-          },
-          client_name: 'iBag',
-          access_token:
-            accessToken,
-          additional_consented_products: [
-            'liabilities',
-            'investments',
-            'identity',
-          ],
-          country_codes: ['US'],
-          language: 'en',
-        });
+        await plaidClient
+          .linkTokenCreate({
+            user: {
+              client_user_id:
+                req.user.id,
+            },
+
+            client_name:
+              'iBag',
+
+            access_token:
+              accessToken,
+
+            additional_consented_products:
+              [
+                'liabilities',
+                'investments',
+                'identity',
+              ],
+
+            country_codes:
+              ['US'],
+
+            language:
+              'en',
+          });
 
       return res.json({
         status: 'ok',
+
         link_token:
-          response.data.link_token,
+          response.data
+            .link_token,
       });
     } catch (err) {
       console.error(
@@ -408,6 +561,7 @@ app.post(
 
       return res.status(500).json({
         status: 'error',
+
         detail:
           err.response?.data ||
           err.message,
@@ -416,10 +570,14 @@ app.post(
   }
 );
 
+
 app.post(
   '/plaid/exchange-public-token',
   requireAuth,
-  async (req, res) => {
+  async (
+    req,
+    res
+  ) => {
     try {
       const {
         public_token,
@@ -435,18 +593,23 @@ app.post(
       }
 
       const exchangeRes =
-        await plaidClient.itemPublicTokenExchange({
-          public_token,
-        });
+        await plaidClient
+          .itemPublicTokenExchange({
+            public_token,
+          });
 
       const access_token =
-        exchangeRes.data.access_token;
+        exchangeRes.data
+          .access_token;
 
       const plaid_item_id =
-        exchangeRes.data.item_id;
+        exchangeRes.data
+          .item_id;
 
       const encryptedToken =
-        encrypt(access_token);
+        encrypt(
+          access_token
+        );
 
       const itemInsert =
         await pool.query(
@@ -458,29 +621,35 @@ app.post(
               plaid_access_token_encrypted,
               institution_name
             )
+
             VALUES
             ($1, $2, $3, $4)
+
             RETURNING id
           `,
           [
             req.user.id,
             plaid_item_id,
             encryptedToken,
-            institution_name || null,
+            institution_name ||
+              null,
           ]
         );
 
       const plaidItemDbId =
-        itemInsert.rows[0].id;
+        itemInsert.rows[0]
+          .id;
 
       const accountsRes =
-        await plaidClient.accountsGet({
-          access_token,
-        });
+        await plaidClient
+          .accountsGet({
+            access_token,
+          });
 
       for (
         const acct of
-        accountsRes.data.accounts
+          accountsRes.data
+            .accounts
       ) {
         await pool.query(
           `
@@ -497,23 +666,49 @@ app.post(
               balance_iso_currency_code,
               balance_updated_at
             )
+
             VALUES
             (
-              $1,$2,$3,$4,$5,$6,$7,$8,$9,now()
+              $1,
+              $2,
+              $3,
+              $4,
+              $5,
+              $6,
+              $7,
+              $8,
+              $9,
+              now()
             )
-            ON CONFLICT (plaid_account_id)
+
+            ON CONFLICT (
+              plaid_account_id
+            )
+
             DO UPDATE SET
-              name = EXCLUDED.name,
-              type = EXCLUDED.type,
-              subtype = EXCLUDED.subtype,
-              mask = EXCLUDED.mask,
+              name =
+                EXCLUDED.name,
+
+              type =
+                EXCLUDED.type,
+
+              subtype =
+                EXCLUDED.subtype,
+
+              mask =
+                EXCLUDED.mask,
+
               current_balance =
                 EXCLUDED.current_balance,
+
               available_balance =
                 EXCLUDED.available_balance,
+
               balance_iso_currency_code =
                 EXCLUDED.balance_iso_currency_code,
-              balance_updated_at = now()
+
+              balance_updated_at =
+                now()
           `,
           [
             plaidItemDbId,
@@ -522,15 +717,19 @@ app.post(
             acct.type,
             acct.subtype,
             acct.mask,
-            acct.balances?.current ?? null,
-            acct.balances?.available ?? null,
-            acct.balances?.iso_currency_code ||
+            acct.balances?.current ??
+              null,
+            acct.balances?.available ??
+              null,
+            acct.balances
+              ?.iso_currency_code ||
               'USD',
           ]
         );
       }
 
-      let immediateSyncResult = null;
+      let immediateSyncResult =
+        null;
 
       try {
         const freshItem =
@@ -541,30 +740,41 @@ app.post(
                 plaid_item_id,
                 plaid_access_token_encrypted,
                 cursor
+
               FROM plaid_items
+
               WHERE id = $1
             `,
             [plaidItemDbId]
           );
 
-        if (freshItem.rows.length > 0) {
+        if (
+          freshItem.rows.length >
+          0
+        ) {
           immediateSyncResult =
             await syncOneItem(
               freshItem.rows[0]
             );
         }
-      } catch (syncErr) {
+      } catch (
+        syncErr
+      ) {
         console.error(
-          'Immediate post-link sync failed (non-fatal):',
+          'Immediate post-link sync failed:',
           syncErr.message
         );
       }
 
       return res.json({
         status: 'ok',
+
         plaid_item_id,
+
         accounts_stored:
-          accountsRes.data.accounts.length,
+          accountsRes.data
+            .accounts.length,
+
         immediate_sync:
           immediateSyncResult,
       });
@@ -576,6 +786,7 @@ app.post(
 
       return res.status(500).json({
         status: 'error',
+
         detail:
           err.response?.data ||
           err.message,
@@ -584,10 +795,14 @@ app.post(
   }
 );
 
+
 app.post(
   '/plaid/resync-after-update',
   requireAuth,
-  async (req, res) => {
+  async (
+    req,
+    res
+  ) => {
     try {
       const {
         plaid_item_id,
@@ -609,9 +824,15 @@ app.post(
               plaid_item_id,
               plaid_access_token_encrypted,
               cursor
+
             FROM plaid_items
-            WHERE plaid_item_id = $1
-              AND user_id = $2
+
+            WHERE plaid_item_id =
+              $1
+
+              AND user_id =
+              $2
+
             LIMIT 1
           `,
           [
@@ -620,7 +841,10 @@ app.post(
           ]
         );
 
-      if (itemRow.rows.length === 0) {
+      if (
+        itemRow.rows.length ===
+        0
+      ) {
         return res.status(404).json({
           status: 'error',
           message:
@@ -645,15 +869,17 @@ app.post(
 
       return res.status(500).json({
         status: 'error',
-        message: err.message,
+        message:
+          err.message,
       });
     }
   }
 );
 
-/*
- * INTERNAL SYNCHRONIZATION
- */
+
+/* -------------------------------------------------------------------------- */
+/* INTERNAL SYNC                                                              */
+/* -------------------------------------------------------------------------- */
 
 app.post(
   '/internal/sync/run',
@@ -661,23 +887,33 @@ app.post(
   runSync
 );
 
-/*
- * 404
- */
 
-app.use((req, res) => {
-  res.status(404).json({
-    status: 'error',
-    message: 'Not found',
-  });
-});
-
-/*
- * GLOBAL ERROR HANDLER
- */
+/* -------------------------------------------------------------------------- */
+/* 404                                                                        */
+/* -------------------------------------------------------------------------- */
 
 app.use(
-  (err, req, res, next) => {
+  (req, res) => {
+    res.status(404).json({
+      status: 'error',
+      message:
+        'Not found',
+    });
+  }
+);
+
+
+/* -------------------------------------------------------------------------- */
+/* GLOBAL ERROR                                                               */
+/* -------------------------------------------------------------------------- */
+
+app.use(
+  (
+    err,
+    req,
+    res,
+    next
+  ) => {
     console.error(
       'Unhandled error:',
       err
@@ -691,15 +927,20 @@ app.use(
   }
 );
 
-/*
- * SERVER
- */
+
+/* -------------------------------------------------------------------------- */
+/* SERVER                                                                     */
+/* -------------------------------------------------------------------------- */
 
 const PORT =
-  process.env.PORT || 3000;
+  process.env.PORT ||
+  3000;
 
-app.listen(PORT, () => {
-  console.log(
-    `shave-api listening on port ${PORT}`
-  );
-});
+app.listen(
+  PORT,
+  () => {
+    console.log(
+      `iBag API listening on port ${PORT}`
+    );
+  }
+);
