@@ -30,58 +30,6 @@ const {
 
 const me = require('./me');
 
-const {
-  getMe,
-  getDashboard,
-  getSummary,
-  getAccounts,
-  getTransactions,
-  getRoundups,
-  getInsights,
-  getNetWorth,
-  getIncome,
-  getCashFlow,
-} = me;
-
-/*
- * STARTUP VALIDATION
- *
- * Express requires every route handler to be
- * an actual function. Validate our imported
- * handlers before registering routes so a
- * missing export produces a useful error.
- */
-
-const requiredHandlers = {
-  requireAuth,
-  requireInternalSecret,
-  signup,
-  login,
-  runSync,
-  syncOneItem,
-
-  getMe,
-  getDashboard,
-  getSummary,
-  getAccounts,
-  getTransactions,
-  getRoundups,
-  getInsights,
-  getNetWorth,
-  getIncome,
-  getCashFlow,
-};
-
-for (const [name, handler] of Object.entries(
-  requiredHandlers,
-)) {
-  if (typeof handler !== 'function') {
-    throw new Error(
-      `Startup configuration error: "${name}" from ./me or ./auth or ./sync is not exported as a function.`,
-    );
-  }
-}
-
 /*
  * STARTUP LOGGING
  */
@@ -92,8 +40,57 @@ console.log('NODE_ENV:', process.env.NODE_ENV);
 console.log('PORT (env):', process.env.PORT);
 
 /*
- * APP
+ * REQUIRED HANDLERS
+ *
+ * These are the handlers the current frontend/API contract
+ * actually depends on.
+ *
+ * Do not invent missing exports.
  */
+const requiredHandlers = {
+  requireAuth,
+  requireInternalSecret,
+  signup,
+  login,
+  runSync,
+  syncOneItem,
+  getDashboard: me.getDashboard,
+};
+
+for (const [name, handler] of Object.entries(requiredHandlers)) {
+  if (typeof handler !== 'function') {
+    throw new Error(
+      `Startup configuration error: "${name}" is not exported as a function.`
+    );
+  }
+}
+
+/*
+ * OPTIONAL READ HANDLERS
+ *
+ * Some versions of me.js may not expose every read endpoint.
+ * An absent optional handler must not prevent the API from starting.
+ */
+const optionalHandlers = {
+  getMe: me.getMe,
+  getSummary: me.getSummary,
+  getAccounts: me.getAccounts,
+  getTransactions: me.getTransactions,
+  getRoundups: me.getRoundups,
+  getInsights: me.getInsights,
+  getNetWorth: me.getNetWorth,
+  getIncome: me.getIncome,
+  getCashFlow: me.getCashFlow,
+};
+
+for (const [name, handler] of Object.entries(optionalHandlers)) {
+  console.log(
+    `${name}:`,
+    typeof handler === 'function'
+      ? 'available'
+      : 'not exported'
+  );
+}
 
 const app = express();
 
@@ -106,12 +103,7 @@ app.use(
 );
 
 app.use(express.json());
-
 app.use(express.static('public'));
-
-/*
- * AUTH RATE LIMITING
- */
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -123,6 +115,27 @@ const authLimiter = rateLimit({
     message: 'Too many attempts. Try again later.',
   },
 });
+
+/*
+ * Helper for optional GET handlers.
+ *
+ * If a handler does not exist in the current me.js,
+ * the API remains alive and that specific route returns
+ * a clear 501 response rather than crashing the server.
+ */
+function registerOptionalGet(path, handler) {
+  if (typeof handler === 'function') {
+    app.get(path, requireAuth, handler);
+    return;
+  }
+
+  app.get(path, requireAuth, (req, res) => {
+    res.status(501).json({
+      status: 'error',
+      message: `The endpoint ${path} is not implemented by the current API read module.`,
+    });
+  });
+}
 
 /*
  * SERVICE / HEALTH
@@ -141,7 +154,7 @@ app.get('/', (req, res) => {
 app.get('/health', (req, res) => {
   console.log(
     'GET /health hit at',
-    new Date().toISOString(),
+    new Date().toISOString()
   );
 
   res.json({
@@ -155,18 +168,16 @@ app.get('/db-check', async (req, res) => {
   console.log('GET /db-check hit');
 
   try {
-    const result = await pool.query(
-      `
-        SELECT
-          now() AS db_time,
-          count(*) AS user_count
-        FROM users
-      `,
-    );
+    const result = await pool.query(`
+      SELECT
+        now() AS db_time,
+        count(*) AS user_count
+      FROM users
+    `);
 
     console.log(
       'DB check result:',
-      result.rows[0],
+      result.rows[0]
     );
 
     res.json({
@@ -177,7 +188,7 @@ app.get('/db-check', async (req, res) => {
   } catch (err) {
     console.error(
       'Database check failed:',
-      err,
+      err
     );
 
     res.status(500).json({
@@ -194,77 +205,68 @@ app.get('/db-check', async (req, res) => {
 app.post(
   '/auth/signup',
   authLimiter,
-  signup,
+  signup
 );
 
 app.post(
   '/auth/login',
   authLimiter,
-  login,
+  login
 );
 
 /*
  * AUTHENTICATED USER / DASHBOARD
  */
 
-app.get(
+registerOptionalGet(
   '/me',
-  requireAuth,
-  getMe,
+  optionalHandlers.getMe
 );
 
 app.get(
   '/me/dashboard',
   requireAuth,
-  getDashboard,
+  me.getDashboard
 );
 
-app.get(
+registerOptionalGet(
   '/me/summary',
-  requireAuth,
-  getSummary,
+  optionalHandlers.getSummary
 );
 
-app.get(
+registerOptionalGet(
   '/me/accounts',
-  requireAuth,
-  getAccounts,
+  optionalHandlers.getAccounts
 );
 
-app.get(
+registerOptionalGet(
   '/me/transactions',
-  requireAuth,
-  getTransactions,
+  optionalHandlers.getTransactions
 );
 
-app.get(
+registerOptionalGet(
   '/me/roundups',
-  requireAuth,
-  getRoundups,
+  optionalHandlers.getRoundups
 );
 
-app.get(
+registerOptionalGet(
   '/me/insights',
-  requireAuth,
-  getInsights,
+  optionalHandlers.getInsights
 );
 
-app.get(
+registerOptionalGet(
   '/me/net-worth',
-  requireAuth,
-  getNetWorth,
+  optionalHandlers.getNetWorth
 );
 
-app.get(
+registerOptionalGet(
   '/me/income',
-  requireAuth,
-  getIncome,
+  optionalHandlers.getIncome
 );
 
-app.get(
+registerOptionalGet(
   '/me/cash-flow',
-  requireAuth,
-  getCashFlow,
+  optionalHandlers.getCashFlow
 );
 
 /*
@@ -276,13 +278,11 @@ app.post(
   requireAuth,
   async (req, res) => {
     try {
-      const activeCount = await pool.query(
-        `
-          SELECT count(*)
-          FROM plaid_items
-          WHERE status = 'active'
-        `,
-      );
+      const activeCount = await pool.query(`
+        SELECT count(*)
+        FROM plaid_items
+        WHERE status = 'active'
+      `);
 
       const CAPACITY_LIMIT = 9;
 
@@ -302,13 +302,9 @@ app.post(
           user: {
             client_user_id: req.user.id,
           },
-
           client_name: 'iBag',
-
           products: PLAID_PRODUCTS,
-
           country_codes: ['US'],
-
           language: 'en',
         });
 
@@ -320,24 +316,18 @@ app.post(
     } catch (err) {
       console.error(
         'Plaid create link token failed:',
-        err,
+        err
       );
-
-      const detail =
-        err.response?.data ||
-        err.message;
 
       return res.status(500).json({
         status: 'error',
-        detail,
+        detail:
+          err.response?.data ||
+          err.message,
       });
     }
-  },
+  }
 );
-
-/*
- * PLAID UPDATE LINK
- */
 
 app.post(
   '/plaid/create-update-link-token',
@@ -370,7 +360,7 @@ app.post(
           [
             plaid_item_id,
             req.user.id,
-          ],
+          ]
         );
 
       if (itemRow.rows.length === 0) {
@@ -384,7 +374,7 @@ app.post(
       const accessToken =
         decrypt(
           itemRow.rows[0]
-            .plaid_access_token_encrypted,
+            .plaid_access_token_encrypted
         );
 
       const response =
@@ -393,20 +383,15 @@ app.post(
             client_user_id:
               req.user.id,
           },
-
           client_name: 'iBag',
-
           access_token:
             accessToken,
-
           additional_consented_products: [
             'liabilities',
             'investments',
             'identity',
           ],
-
           country_codes: ['US'],
-
           language: 'en',
         });
 
@@ -418,24 +403,18 @@ app.post(
     } catch (err) {
       console.error(
         'Plaid update link token failed:',
-        err,
+        err
       );
-
-      const detail =
-        err.response?.data ||
-        err.message;
 
       return res.status(500).json({
         status: 'error',
-        detail,
+        detail:
+          err.response?.data ||
+          err.message,
       });
     }
-  },
+  }
 );
-
-/*
- * PLAID PUBLIC TOKEN EXCHANGE
- */
 
 app.post(
   '/plaid/exchange-public-token',
@@ -466,9 +445,6 @@ app.post(
       const plaid_item_id =
         exchangeRes.data.item_id;
 
-      const userId =
-        req.user.id;
-
       const encryptedToken =
         encrypt(access_token);
 
@@ -487,12 +463,11 @@ app.post(
             RETURNING id
           `,
           [
-            userId,
+            req.user.id,
             plaid_item_id,
             encryptedToken,
-            institution_name ||
-              null,
-          ],
+            institution_name || null,
+          ]
         );
 
       const plaidItemDbId =
@@ -524,36 +499,21 @@ app.post(
             )
             VALUES
             (
-              $1,
-              $2,
-              $3,
-              $4,
-              $5,
-              $6,
-              $7,
-              $8,
-              $9,
-              now()
+              $1,$2,$3,$4,$5,$6,$7,$8,$9,now()
             )
-            ON CONFLICT
-              (plaid_account_id)
+            ON CONFLICT (plaid_account_id)
             DO UPDATE SET
-              name =
-                EXCLUDED.name,
-              type =
-                EXCLUDED.type,
-              subtype =
-                EXCLUDED.subtype,
-              mask =
-                EXCLUDED.mask,
+              name = EXCLUDED.name,
+              type = EXCLUDED.type,
+              subtype = EXCLUDED.subtype,
+              mask = EXCLUDED.mask,
               current_balance =
                 EXCLUDED.current_balance,
               available_balance =
                 EXCLUDED.available_balance,
               balance_iso_currency_code =
                 EXCLUDED.balance_iso_currency_code,
-              balance_updated_at =
-                now()
+              balance_updated_at = now()
           `,
           [
             plaidItemDbId,
@@ -562,23 +522,15 @@ app.post(
             acct.type,
             acct.subtype,
             acct.mask,
-            acct.balances
-              ?.current ?? null,
-            acct.balances
-              ?.available ?? null,
-            acct.balances
-              ?.iso_currency_code ||
+            acct.balances?.current ?? null,
+            acct.balances?.available ?? null,
+            acct.balances?.iso_currency_code ||
               'USD',
-          ],
+          ]
         );
       }
 
-      /*
-       * Immediate transaction synchronization.
-       */
-
-      let immediateSyncResult =
-        null;
+      let immediateSyncResult = null;
 
       try {
         const freshItem =
@@ -592,57 +544,45 @@ app.post(
               FROM plaid_items
               WHERE id = $1
             `,
-            [plaidItemDbId],
+            [plaidItemDbId]
           );
 
-        if (
-          freshItem.rows.length > 0
-        ) {
+        if (freshItem.rows.length > 0) {
           immediateSyncResult =
             await syncOneItem(
-              freshItem.rows[0],
+              freshItem.rows[0]
             );
         }
       } catch (syncErr) {
         console.error(
           'Immediate post-link sync failed (non-fatal):',
-          syncErr.message,
+          syncErr.message
         );
       }
 
       return res.json({
         status: 'ok',
-
         plaid_item_id,
-
         accounts_stored:
-          accountsRes.data.accounts
-            .length,
-
+          accountsRes.data.accounts.length,
         immediate_sync:
           immediateSyncResult,
       });
     } catch (err) {
       console.error(
         'Plaid public token exchange failed:',
-        err,
+        err
       );
-
-      const detail =
-        err.response?.data ||
-        err.message;
 
       return res.status(500).json({
         status: 'error',
-        detail,
+        detail:
+          err.response?.data ||
+          err.message,
       });
     }
-  },
+  }
 );
-
-/*
- * PLAID RESYNC AFTER UPDATE
- */
 
 app.post(
   '/plaid/resync-after-update',
@@ -677,7 +617,7 @@ app.post(
           [
             plaid_item_id,
             req.user.id,
-          ],
+          ]
         );
 
       if (itemRow.rows.length === 0) {
@@ -690,7 +630,7 @@ app.post(
 
       const result =
         await syncOneItem(
-          itemRow.rows[0],
+          itemRow.rows[0]
         );
 
       return res.json({
@@ -700,7 +640,7 @@ app.post(
     } catch (err) {
       console.error(
         'Plaid resync failed:',
-        err,
+        err
       );
 
       return res.status(500).json({
@@ -708,7 +648,7 @@ app.post(
         message: err.message,
       });
     }
-  },
+  }
 );
 
 /*
@@ -718,7 +658,7 @@ app.post(
 app.post(
   '/internal/sync/run',
   requireInternalSecret,
-  runSync,
+  runSync
 );
 
 /*
@@ -740,7 +680,7 @@ app.use(
   (err, req, res, next) => {
     console.error(
       'Unhandled error:',
-      err,
+      err
     );
 
     res.status(500).json({
@@ -748,7 +688,7 @@ app.use(
       message:
         'Internal server error',
     });
-  },
+  }
 );
 
 /*
@@ -760,6 +700,6 @@ const PORT =
 
 app.listen(PORT, () => {
   console.log(
-    `shave-api listening on port ${PORT}`,
+    `shave-api listening on port ${PORT}`
   );
 });
