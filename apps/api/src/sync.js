@@ -17,6 +17,7 @@ const MUTATION_DURING_PAGINATION =
 
 const MAX_PAGINATION_RESTARTS = 3;
 
+
 /*
  * --------------------------------------------------------------------------
  * PLAID TRANSACTION SYNC
@@ -24,9 +25,10 @@ const MAX_PAGINATION_RESTARTS = 3;
  *
  * Plaid /transactions/sync is cursor based.
  *
- * We collect the complete change set before returning it.
- * If Plaid reports that the transaction set mutated during
- * pagination, we restart from the original cursor.
+ * We consume every page before returning the complete delta.
+ *
+ * If Plaid reports that the transaction set changed while pagination
+ * was occurring, restart from the original cursor.
  */
 async function fetchTransactionUpdates(
   accessToken,
@@ -55,7 +57,8 @@ async function fetchTransactionUpdates(
             count: 500,
           });
 
-        const data = response.data;
+        const data =
+          response.data;
 
         added.push(
           ...(data.added || [])
@@ -99,12 +102,13 @@ async function fetchTransactionUpdates(
 
       console.warn(
         `Transactions pagination changed during sync. ` +
-        `Restarting from original cursor. ` +
-        `Attempt ${restartCount}/${MAX_PAGINATION_RESTARTS}.`
+          `Restarting from original cursor. ` +
+          `Attempt ${restartCount}/${MAX_PAGINATION_RESTARTS}.`
       );
     }
   }
 }
+
 
 /*
  * --------------------------------------------------------------------------
@@ -112,7 +116,8 @@ async function fetchTransactionUpdates(
  * --------------------------------------------------------------------------
  *
  * Round-Ups are analytical/intelligence records only.
- * This code performs NO money movement.
+ *
+ * NO MONEY MOVEMENT OCCURS HERE.
  *
  * Pending transactions are not authoritative Round-Up events.
  */
@@ -142,7 +147,9 @@ async function reconcileRoundup(
       [transactionId]
     );
 
-  if (!transactionResult.rows.length) {
+  if (
+    !transactionResult.rows.length
+  ) {
     throw new Error(
       `Transaction ${transactionId} not found during Round-Up reconciliation`
     );
@@ -151,10 +158,13 @@ async function reconcileRoundup(
   const transaction =
     transactionResult.rows[0];
 
+
   /*
    * Pending transactions are not authoritative.
    */
-  if (transaction.pending === true) {
+  if (
+    transaction.pending === true
+  ) {
     await client.query(
       `
         UPDATE roundup_events
@@ -182,10 +192,12 @@ async function reconcileRoundup(
     };
   }
 
+
   const evaluation =
     getRoundupEligibility(
       transaction
     );
+
 
   if (evaluation.eligible) {
     const roundupAmount =
@@ -261,9 +273,10 @@ async function reconcileRoundup(
     };
   }
 
+
   /*
-   * Existing Round-Up record becomes explicitly voided
-   * when the authoritative transaction is no longer eligible.
+   * Existing Round-Up becomes explicitly voided when the
+   * authoritative transaction is no longer eligible.
    */
   await client.query(
     `
@@ -294,6 +307,7 @@ async function reconcileRoundup(
   };
 }
 
+
 /*
  * --------------------------------------------------------------------------
  * PENDING → POSTED RECONCILIATION
@@ -303,15 +317,15 @@ async function reconcileRoundup(
  *
  * pending_transaction_id identifies the prior pending transaction.
  *
- * We preserve the existing local transaction row so downstream
- * intelligence and Round-Up lineage remain attached to the same
- * local transaction identity.
+ * We preserve the existing local transaction identity.
  */
 async function findPendingReplacement(
   client,
   txn
 ) {
-  if (!txn.pending_transaction_id) {
+  if (
+    !txn.pending_transaction_id
+  ) {
     return null;
   }
 
@@ -336,6 +350,7 @@ async function findPendingReplacement(
 
   return result.rows[0].id;
 }
+
 
 /*
  * --------------------------------------------------------------------------
@@ -404,6 +419,7 @@ async function upsertTransaction(
       return result.rows[0].id;
     }
   }
+
 
   /*
    * Normal insert/update path.
@@ -508,13 +524,16 @@ async function upsertTransaction(
   return result.rows[0].id;
 }
 
+
 /*
  * --------------------------------------------------------------------------
  * REMOVED TRANSACTION
  * --------------------------------------------------------------------------
  *
- * We retain the local transaction row and mark it removed.
- * This preserves lineage instead of physically deleting financial history.
+ * Retain the local transaction row.
+ *
+ * Never physically delete financial lineage simply because Plaid reports
+ * a transaction as removed.
  */
 async function markTransactionRemoved(
   client,
@@ -569,6 +588,7 @@ async function markTransactionRemoved(
   return true;
 }
 
+
 /*
  * --------------------------------------------------------------------------
  * SYNC ONE PLAID ITEM
@@ -598,16 +618,18 @@ async function syncOneItem(item) {
       'BEGIN'
     );
 
+
     /*
-     * Access tokens are stored encrypted at rest.
+     * Decrypt access token only when it is needed.
      */
     const accessToken =
       decrypt(
         item.plaid_access_token_encrypted
       );
 
+
     /*
-     * Pull the complete transaction delta from Plaid.
+     * Pull complete transaction delta.
      */
     const {
       added,
@@ -619,6 +641,7 @@ async function syncOneItem(item) {
         accessToken,
         item.cursor
       );
+
 
     /*
      * Resolve local accounts belonging to this Item.
@@ -646,6 +669,7 @@ async function syncOneItem(item) {
       ] = account.id;
     }
 
+
     /*
      * Resolve Item owner.
      */
@@ -659,7 +683,9 @@ async function syncOneItem(item) {
         [item.id]
       );
 
-    if (!userResult.rows.length) {
+    if (
+      !userResult.rows.length
+    ) {
       throw new Error(
         'Plaid Item owner not found'
       );
@@ -668,12 +694,16 @@ async function syncOneItem(item) {
     const userId =
       userResult.rows[0].user_id;
 
+
     let syncedAdded = 0;
     let syncedModified = 0;
     let syncedRemoved = 0;
 
+
     /*
+     * ----------------------------------------------------------------------
      * ADDED
+     * ----------------------------------------------------------------------
      */
     for (const txn of added) {
       const accountId =
@@ -685,6 +715,7 @@ async function syncOneItem(item) {
         console.warn(
           `Skipping transaction ${txn.transaction_id}: account not found`
         );
+
         continue;
       }
 
@@ -704,10 +735,16 @@ async function syncOneItem(item) {
       syncedAdded += 1;
     }
 
+
     /*
+     * ----------------------------------------------------------------------
      * MODIFIED
+     * ----------------------------------------------------------------------
      */
-    for (const txn of modified) {
+    for (
+      const txn
+      of modified
+    ) {
       const accountId =
         accountMap[
           txn.account_id
@@ -717,6 +754,7 @@ async function syncOneItem(item) {
         console.warn(
           `Skipping modified transaction ${txn.transaction_id}: account not found`
         );
+
         continue;
       }
 
@@ -736,8 +774,11 @@ async function syncOneItem(item) {
       syncedModified += 1;
     }
 
+
     /*
+     * ----------------------------------------------------------------------
      * REMOVED
+     * ----------------------------------------------------------------------
      */
     for (
       const removedTxn
@@ -754,11 +795,14 @@ async function syncOneItem(item) {
       }
     }
 
+
     /*
-     * CRITICAL:
+     * ----------------------------------------------------------------------
+     * CURSOR ADVANCEMENT
+     * ----------------------------------------------------------------------
      *
-     * Advance the Plaid cursor only after every transaction
-     * state transition has succeeded.
+     * The Plaid cursor is advanced only after every financial state
+     * transition has succeeded.
      */
     await client.query(
       `
@@ -772,15 +816,17 @@ async function syncOneItem(item) {
       ]
     );
 
+
     /*
-     * Commit financial state + cursor atomically.
+     * Commit transaction state and cursor atomically.
      */
     await client.query(
       'COMMIT'
     );
 
+
     /*
-     * Record successful synchronization.
+     * Record successful sync.
      */
     await pool.query(
       `
@@ -801,6 +847,7 @@ async function syncOneItem(item) {
       ]
     );
 
+
     return {
       plaid_item_id:
         item.plaid_item_id,
@@ -814,10 +861,12 @@ async function syncOneItem(item) {
       transactions_removed:
         syncedRemoved,
     };
+
   } catch (err) {
     await client.query(
       'ROLLBACK'
     );
+
 
     const detail =
       err.response?.data
@@ -826,10 +875,12 @@ async function syncOneItem(item) {
         ?.display_message ||
       err.message;
 
+
     console.error(
       `Plaid Item ${item.plaid_item_id} sync failed:`,
       err
     );
+
 
     await pool.query(
       `
@@ -846,6 +897,7 @@ async function syncOneItem(item) {
       ]
     );
 
+
     return {
       plaid_item_id:
         item.plaid_item_id,
@@ -853,17 +905,22 @@ async function syncOneItem(item) {
       error:
         detail,
     };
+
   } finally {
     client.release();
   }
 }
 
+
 /*
  * --------------------------------------------------------------------------
- * RUN ALL ACTIVE ITEMS
+ * RUN ALL ACTIVE PLAID ITEMS
  * --------------------------------------------------------------------------
  */
-async function runSync(req, res) {
+async function runSync(
+  req,
+  res
+) {
   try {
     const result =
       await pool.query(
@@ -889,12 +946,15 @@ async function runSync(req, res) {
       );
     }
 
+
     const failures =
       results.filter(
-        result => result.error
+        result =>
+          result.error
       );
 
-    res.json({
+
+    return res.json({
       status:
         failures.length === 0
           ? 'ok'
@@ -908,19 +968,27 @@ async function runSync(req, res) {
 
       results,
     });
+
   } catch (err) {
     console.error(
       'Scheduled sync failed:',
       err
     );
 
-    res.status(500).json({
+    return res.status(500).json({
       status: 'error',
-      message: err.message,
+      message:
+        err.message,
     });
   }
 }
 
+
+/*
+ * --------------------------------------------------------------------------
+ * EXPORTS
+ * --------------------------------------------------------------------------
+ */
 module.exports = {
   runSync,
   syncOneItem,
