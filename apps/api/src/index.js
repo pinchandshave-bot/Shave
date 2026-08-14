@@ -2,7 +2,8 @@ require('dotenv').config();
 
 const express = require('express');
 const cors = require('cors');
-const rateLimit = require('express-rate-limit');
+const rateLimit =
+  require('express-rate-limit');
 
 const pool = require('./db');
 
@@ -32,18 +33,45 @@ const {
   plaidWebhook,
 } = require('./plaidWebhook');
 
-const me = require('./me');
+const me =
+  require('./me');
 
 const {
   getFinancialIntelligence,
 } = require('./intelligence');
 
 
-console.log('Booting iBag API...');
-console.log('Running file:', __filename);
-console.log('NODE_ENV:', process.env.NODE_ENV);
-console.log('PORT (env):', process.env.PORT);
+/*
+ * --------------------------------------------------------------------------
+ * STARTUP
+ * --------------------------------------------------------------------------
+ */
 
+console.log(
+  'Booting iBag API...'
+);
+
+console.log(
+  'Running file:',
+  __filename
+);
+
+console.log(
+  'NODE_ENV:',
+  process.env.NODE_ENV
+);
+
+console.log(
+  'PORT (env):',
+  process.env.PORT
+);
+
+
+/*
+ * --------------------------------------------------------------------------
+ * REQUIRED HANDLERS
+ * --------------------------------------------------------------------------
+ */
 
 const requiredHandlers = {
   requireAuth,
@@ -53,8 +81,10 @@ const requiredHandlers = {
   runSync,
   syncOneItem,
   plaidWebhook,
+
   getDashboard:
     me.getDashboard,
+
   getFinancialIntelligence,
 };
 
@@ -80,20 +110,37 @@ for (
 }
 
 
+/*
+ * --------------------------------------------------------------------------
+ * OPTIONAL READ HANDLERS
+ * --------------------------------------------------------------------------
+ */
+
 const optionalHandlers = {
-  getMe: me.getMe,
-  getSummary: me.getSummary,
-  getAccounts: me.getAccounts,
+  getMe:
+    me.getMe,
+
+  getSummary:
+    me.getSummary,
+
+  getAccounts:
+    me.getAccounts,
+
   getTransactions:
     me.getTransactions,
+
   getRoundups:
     me.getRoundups,
+
   getInsights:
     me.getInsights,
+
   getNetWorth:
     me.getNetWorth,
+
   getIncome:
     me.getIncome,
+
   getCashFlow:
     me.getCashFlow,
 };
@@ -117,9 +164,21 @@ for (
 }
 
 
+/*
+ * --------------------------------------------------------------------------
+ * EXPRESS APP
+ * --------------------------------------------------------------------------
+ */
+
 const app =
   express();
 
+
+/*
+ * --------------------------------------------------------------------------
+ * CORS
+ * --------------------------------------------------------------------------
+ */
 
 app.use(
   cors({
@@ -132,11 +191,13 @@ app.use(
 
 
 /*
- * Capture the exact raw request body for Plaid webhook verification.
+ * --------------------------------------------------------------------------
+ * JSON BODY PARSER
+ * --------------------------------------------------------------------------
  *
- * Plaid signs the raw body received by the webhook endpoint.
- * The body must therefore be captured before Express converts it
- * into a JavaScript object.
+ * Plaid webhook verification requires the exact raw request body.
+ *
+ * Capture the raw body before Express transforms it into an object.
  */
 app.use(
   express.json({
@@ -159,12 +220,24 @@ app.use(
 );
 
 
+/*
+ * --------------------------------------------------------------------------
+ * STATIC FRONTEND
+ * --------------------------------------------------------------------------
+ */
+
 app.use(
   express.static(
     'public'
   )
 );
 
+
+/*
+ * --------------------------------------------------------------------------
+ * AUTH RATE LIMITER
+ * --------------------------------------------------------------------------
+ */
 
 const authLimiter =
   rateLimit({
@@ -187,6 +260,12 @@ const authLimiter =
   });
 
 
+/*
+ * --------------------------------------------------------------------------
+ * OPTIONAL GET REGISTRATION
+ * --------------------------------------------------------------------------
+ */
+
 function registerOptionalGet(
   path,
   handler
@@ -207,9 +286,13 @@ function registerOptionalGet(
   app.get(
     path,
     requireAuth,
-    (req, res) => {
+    (
+      req,
+      res
+    ) => {
       res.status(501).json({
         status: 'error',
+
         message:
           'The endpoint ' +
           path +
@@ -220,16 +303,24 @@ function registerOptionalGet(
 }
 
 
-/* -------------------------------------------------------------------------- */
-/* SERVICE                                                                    */
-/* -------------------------------------------------------------------------- */
+/*
+ * --------------------------------------------------------------------------
+ * SERVICE
+ * --------------------------------------------------------------------------
+ */
 
 app.get(
   '/',
-  (req, res) => {
+  (
+    req,
+    res
+  ) => {
     res.json({
       status: 'ok',
-      service: 'ibag-api',
+
+      service:
+        'ibag-api',
+
       message:
         'iBag financial intelligence API is running',
     });
@@ -239,10 +330,16 @@ app.get(
 
 app.get(
   '/health',
-  (req, res) => {
+  (
+    req,
+    res
+  ) => {
     res.json({
       status: 'ok',
-      service: 'ibag-api',
+
+      service:
+        'ibag-api',
+
       time:
         new Date()
           .toISOString(),
@@ -270,23 +367,27 @@ app.get(
           `
         );
 
-      res.json({
+      return res.json({
         status: 'ok',
+
         db_time:
           result.rows[0]
             .db_time,
+
         user_count:
           result.rows[0]
             .user_count,
       });
+
     } catch (err) {
       console.error(
         'Database check failed:',
         err
       );
 
-      res.status(500).json({
+      return res.status(500).json({
         status: 'error',
+
         message:
           err.message,
       });
@@ -295,9 +396,11 @@ app.get(
 );
 
 
-/* -------------------------------------------------------------------------- */
-/* PLAID WEBHOOK                                                              */
-/* -------------------------------------------------------------------------- */
+/*
+ * --------------------------------------------------------------------------
+ * PLAID WEBHOOK
+ * --------------------------------------------------------------------------
+ */
 
 app.post(
   '/plaid/webhook',
@@ -305,9 +408,11 @@ app.post(
 );
 
 
-/* -------------------------------------------------------------------------- */
-/* AUTH                                                                       */
-/* -------------------------------------------------------------------------- */
+/*
+ * --------------------------------------------------------------------------
+ * AUTH
+ * --------------------------------------------------------------------------
+ */
 
 app.post(
   '/auth/signup',
@@ -323,9 +428,11 @@ app.post(
 );
 
 
-/* -------------------------------------------------------------------------- */
-/* USER / INTELLIGENCE                                                        */
-/* -------------------------------------------------------------------------- */
+/*
+ * --------------------------------------------------------------------------
+ * USER / INTELLIGENCE
+ * --------------------------------------------------------------------------
+ */
 
 registerOptionalGet(
   '/me',
@@ -355,9 +462,11 @@ app.get(
 
       return res.json({
         status: 'ok',
+
         intelligence:
           result,
       });
+
     } catch (err) {
       console.error(
         'Financial intelligence failed:',
@@ -366,6 +475,7 @@ app.get(
 
       return res.status(500).json({
         status: 'error',
+
         message:
           'Unable to calculate financial intelligence',
       });
@@ -415,9 +525,11 @@ registerOptionalGet(
 );
 
 
-/* -------------------------------------------------------------------------- */
-/* PLAID                                                                      */
-/* -------------------------------------------------------------------------- */
+/*
+ * --------------------------------------------------------------------------
+ * PLAID LINK TOKEN
+ * --------------------------------------------------------------------------
+ */
 
 app.post(
   '/plaid/create-link-token',
@@ -427,6 +539,7 @@ app.post(
     res
   ) => {
     try {
+
       const activeCount =
         await pool.query(
           `
@@ -437,7 +550,10 @@ app.post(
           `
         );
 
-      const CAPACITY_LIMIT = 9;
+
+      const CAPACITY_LIMIT =
+        9;
+
 
       if (
         Number(
@@ -449,6 +565,7 @@ app.post(
       ) {
         return res.status(503).json({
           status: 'error',
+
           message:
             'iBag is at capacity for new bank connections right now. Try again soon.',
         });
@@ -527,6 +644,7 @@ app.post(
           response.data
             .expiration,
       });
+
     } catch (err) {
       console.error(
         'Plaid create link token failed:',
@@ -554,6 +672,12 @@ app.post(
 );
 
 
+/*
+ * --------------------------------------------------------------------------
+ * PLAID UPDATE LINK TOKEN
+ * --------------------------------------------------------------------------
+ */
+
 app.post(
   '/plaid/create-update-link-token',
   requireAuth,
@@ -562,17 +686,21 @@ app.post(
     res
   ) => {
     try {
+
       const {
         plaid_item_id,
       } = req.body;
 
+
       if (!plaid_item_id) {
         return res.status(400).json({
           status: 'error',
+
           message:
             'plaid_item_id is required',
         });
       }
+
 
       const itemRow =
         await pool.query(
@@ -580,15 +708,9 @@ app.post(
             SELECT
               id,
               plaid_access_token_encrypted
-
             FROM plaid_items
-
-            WHERE plaid_item_id =
-              $1
-
-              AND user_id =
-              $2
-
+            WHERE plaid_item_id = $1
+              AND user_id = $2
             LIMIT 1
           `,
           [
@@ -597,22 +719,26 @@ app.post(
           ]
         );
 
+
       if (
         itemRow.rows.length ===
         0
       ) {
         return res.status(404).json({
           status: 'error',
+
           message:
             'Item not found for this user',
         });
       }
+
 
       const accessToken =
         decrypt(
           itemRow.rows[0]
             .plaid_access_token_encrypted
         );
+
 
       const response =
         await plaidClient
@@ -644,6 +770,7 @@ app.post(
               'en',
           });
 
+
       return res.json({
         status: 'ok',
 
@@ -655,6 +782,7 @@ app.post(
           response.data
             .expiration,
       });
+
     } catch (err) {
       console.error(
         'Plaid update link token failed:',
@@ -682,6 +810,12 @@ app.post(
 );
 
 
+/*
+ * --------------------------------------------------------------------------
+ * PLAID PUBLIC TOKEN EXCHANGE
+ * --------------------------------------------------------------------------
+ */
+
 app.post(
   '/plaid/exchange-public-token',
   requireAuth,
@@ -690,18 +824,22 @@ app.post(
     res
   ) => {
     try {
+
       const {
         public_token,
         institution_name,
       } = req.body;
 
+
       if (!public_token) {
         return res.status(400).json({
           status: 'error',
+
           message:
             'public_token is required',
         });
       }
+
 
       const exchangeRes =
         await plaidClient
@@ -709,18 +847,22 @@ app.post(
             public_token,
           });
 
+
       const access_token =
         exchangeRes.data
           .access_token;
+
 
       const plaid_item_id =
         exchangeRes.data
           .item_id;
 
+
       const encryptedToken =
         encrypt(
           access_token
         );
+
 
       const itemInsert =
         await pool.query(
@@ -732,10 +874,8 @@ app.post(
               plaid_access_token_encrypted,
               institution_name
             )
-
             VALUES
             ($1, $2, $3, $4)
-
             RETURNING id
           `,
           [
@@ -747,9 +887,11 @@ app.post(
           ]
         );
 
+
       const plaidItemDbId =
         itemInsert.rows[0]
           .id;
+
 
       const accountsRes =
         await plaidClient
@@ -757,11 +899,13 @@ app.post(
             access_token,
           });
 
+
       for (
         const acct of
           accountsRes.data
             .accounts
       ) {
+
         await pool.query(
           `
             INSERT INTO accounts
@@ -777,7 +921,6 @@ app.post(
               balance_iso_currency_code,
               balance_updated_at
             )
-
             VALUES
             (
               $1,
@@ -791,11 +934,9 @@ app.post(
               $9,
               now()
             )
-
             ON CONFLICT (
               plaid_account_id
             )
-
             DO UPDATE SET
               name =
                 EXCLUDED.name,
@@ -828,10 +969,13 @@ app.post(
             acct.type,
             acct.subtype,
             acct.mask,
+
             acct.balances?.current ??
               null,
+
             acct.balances?.available ??
               null,
+
             acct.balances
               ?.iso_currency_code ||
               'USD',
@@ -839,10 +983,16 @@ app.post(
         );
       }
 
+
+      /*
+       * Immediately synchronize the newly connected Item.
+       */
       let immediateSyncResult =
         null;
 
+
       try {
+
         const freshItem =
           await pool.query(
             `
@@ -851,13 +1001,12 @@ app.post(
                 plaid_item_id,
                 plaid_access_token_encrypted,
                 cursor
-
               FROM plaid_items
-
               WHERE id = $1
             `,
             [plaidItemDbId]
           );
+
 
         if (
           freshItem.rows.length >
@@ -868,14 +1017,17 @@ app.post(
               freshItem.rows[0]
             );
         }
+
       } catch (
         syncErr
       ) {
+
         console.error(
           'Immediate post-link sync failed:',
-          syncErr.message
+          syncErr
         );
       }
+
 
       return res.json({
         status: 'ok',
@@ -889,7 +1041,9 @@ app.post(
         immediate_sync:
           immediateSyncResult,
       });
+
     } catch (err) {
+
       console.error(
         'Plaid public token exchange failed:',
         err
@@ -916,6 +1070,12 @@ app.post(
 );
 
 
+/*
+ * --------------------------------------------------------------------------
+ * RESYNC AFTER PLAID UPDATE
+ * --------------------------------------------------------------------------
+ */
+
 app.post(
   '/plaid/resync-after-update',
   requireAuth,
@@ -924,17 +1084,21 @@ app.post(
     res
   ) => {
     try {
+
       const {
         plaid_item_id,
       } = req.body;
 
+
       if (!plaid_item_id) {
         return res.status(400).json({
           status: 'error',
+
           message:
             'plaid_item_id is required',
         });
       }
+
 
       const itemRow =
         await pool.query(
@@ -944,15 +1108,9 @@ app.post(
               plaid_item_id,
               plaid_access_token_encrypted,
               cursor
-
             FROM plaid_items
-
-            WHERE plaid_item_id =
-              $1
-
-              AND user_id =
-              $2
-
+            WHERE plaid_item_id = $1
+              AND user_id = $2
             LIMIT 1
           `,
           [
@@ -961,27 +1119,34 @@ app.post(
           ]
         );
 
+
       if (
         itemRow.rows.length ===
         0
       ) {
         return res.status(404).json({
           status: 'error',
+
           message:
             'Item not found for this user',
         });
       }
+
 
       const result =
         await syncOneItem(
           itemRow.rows[0]
         );
 
+
       return res.json({
         status: 'ok',
+
         result,
       });
+
     } catch (err) {
+
       console.error(
         'Plaid resync failed:',
         err
@@ -989,6 +1154,7 @@ app.post(
 
       return res.status(500).json({
         status: 'error',
+
         message:
           err.message,
       });
@@ -997,9 +1163,11 @@ app.post(
 );
 
 
-/* -------------------------------------------------------------------------- */
-/* INTERNAL SYNC                                                              */
-/* -------------------------------------------------------------------------- */
+/*
+ * --------------------------------------------------------------------------
+ * INTERNAL SYNC
+ * --------------------------------------------------------------------------
+ */
 
 app.post(
   '/internal/sync/run',
@@ -1008,14 +1176,20 @@ app.post(
 );
 
 
-/* -------------------------------------------------------------------------- */
-/* 404                                                                        */
-/* -------------------------------------------------------------------------- */
+/*
+ * --------------------------------------------------------------------------
+ * 404
+ * --------------------------------------------------------------------------
+ */
 
 app.use(
-  (req, res) => {
+  (
+    req,
+    res
+  ) => {
     res.status(404).json({
       status: 'error',
+
       message:
         'Not found',
     });
@@ -1023,9 +1197,11 @@ app.use(
 );
 
 
-/* -------------------------------------------------------------------------- */
-/* GLOBAL ERROR                                                               */
-/* -------------------------------------------------------------------------- */
+/*
+ * --------------------------------------------------------------------------
+ * GLOBAL ERROR HANDLER
+ * --------------------------------------------------------------------------
+ */
 
 app.use(
   (
@@ -1034,6 +1210,7 @@ app.use(
     res,
     next
   ) => {
+
     console.error(
       'Unhandled error:',
       err
@@ -1041,6 +1218,7 @@ app.use(
 
     res.status(500).json({
       status: 'error',
+
       message:
         'Internal server error',
     });
@@ -1048,13 +1226,16 @@ app.use(
 );
 
 
-/* -------------------------------------------------------------------------- */
-/* SERVER                                                                     */
-/* -------------------------------------------------------------------------- */
+/*
+ * --------------------------------------------------------------------------
+ * SERVER
+ * --------------------------------------------------------------------------
+ */
 
 const PORT =
   process.env.PORT ||
   3000;
+
 
 app.listen(
   PORT,
