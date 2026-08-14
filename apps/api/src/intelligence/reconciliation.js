@@ -1,6 +1,20 @@
 function roundMoney(value) {
+  if (
+    value === null ||
+    value === undefined ||
+    value === ''
+  ) {
+    return null;
+  }
+
+  const number = Number(value);
+
+  if (!Number.isFinite(number)) {
+    return null;
+  }
+
   return Math.round(
-    (Number(value) + Number.EPSILON) * 100
+    (number + Number.EPSILON) * 100
   ) / 100;
 }
 
@@ -9,97 +23,175 @@ function approximatelyEqual(
   b,
   tolerance = 0.01
 ) {
+  const left = Number(a);
+  const right = Number(b);
+
+  if (
+    !Number.isFinite(left) ||
+    !Number.isFinite(right)
+  ) {
+    return false;
+  }
+
   return Math.abs(
-    Number(a) - Number(b)
+    left - right
   ) <= tolerance;
 }
 
 function sum(values) {
+  if (!Array.isArray(values)) {
+    return 0;
+  }
+
   return values.reduce(
-    (total, value) =>
-      total + Number(value || 0),
+    (total, value) => {
+      const number = Number(value);
+
+      return total +
+        (
+          Number.isFinite(number)
+            ? number
+            : 0
+        );
+    },
     0
   );
 }
 
-const reconciliation =
-  reconcileRoundupAggregate({
-    events: eligibleEvents,
+/*
+ * Round-Up reconciliation.
+ *
+ * This function accepts the current intelligence.js
+ * contract:
+ *
+ * {
+ *   eligiblePurchaseCount,
+ *   opportunity,
+ *   categories,
+ *   merchants
+ * }
+ *
+ * The aggregate is reconciled from the category and
+ * merchant populations supplied by the intelligence
+ * engine.
+ *
+ * No financial value is fabricated when a population
+ * is missing. Missing arrays are treated as an invalid
+ * reconciliation input rather than silently becoming
+ * valid evidence.
+ */
+function reconcileRoundupAggregate({
+  eligiblePurchaseCount,
+  opportunity,
+  categories,
+  merchants,
+}) {
+  const categoriesAreValid =
+    Array.isArray(categories);
 
-    globalCount:
-      eligibleEvents.length,
+  const merchantsAreValid =
+    Array.isArray(merchants);
 
-    globalOpportunity:
-      round(opportunity),
+  const globalCount =
+    Number(eligiblePurchaseCount);
 
-    categories,
+  const globalOpportunity =
+    roundMoney(opportunity);
 
-    merchants,
-  });
+  const validGlobalCount =
+    Number.isInteger(globalCount) &&
+    globalCount >= 0;
+
+  const validGlobalOpportunity =
+    globalOpportunity !== null &&
+    globalOpportunity >= 0;
+
   const categoryOpportunity =
-    roundMoney(
-      sum(
-        categories.map(
-          item => item.opportunity
+    categoriesAreValid
+      ? roundMoney(
+          sum(
+            categories.map(
+              item =>
+                item &&
+                item.opportunity
+            )
+          )
         )
-      )
-    );
+      : null;
 
   const merchantOpportunity =
-    roundMoney(
-      sum(
-        merchants.map(
-          item => item.opportunity
+    merchantsAreValid
+      ? roundMoney(
+          sum(
+            merchants.map(
+              item =>
+                item &&
+                item.opportunity
+            )
+          )
         )
-      )
-    );
+      : null;
 
   const categoryCount =
-    sum(
-      categories.map(
-        item => item.purchases
-      )
-    );
+    categoriesAreValid
+      ? sum(
+          categories.map(
+            item =>
+              item &&
+              item.purchases
+          )
+        )
+      : null;
 
   const merchantCount =
-    sum(
-      merchants.map(
-        item => item.purchases
-      )
-    );
-
-  const uniqueTransactionIds =
-    new Set(
-      events.map(
-        event => event.transaction_id
-      )
-    );
+    merchantsAreValid
+      ? sum(
+          merchants.map(
+            item =>
+              item &&
+              item.purchases
+          )
+        )
+      : null;
 
   const checks = {
+    categories_present:
+      categoriesAreValid,
+
+    merchants_present:
+      merchantsAreValid,
+
+    global_count_valid:
+      validGlobalCount,
+
+    global_opportunity_valid:
+      validGlobalOpportunity,
+
     category_total_reconciles:
+      categoriesAreValid &&
+      validGlobalOpportunity &&
       approximatelyEqual(
         categoryOpportunity,
         globalOpportunity
       ),
 
     merchant_total_reconciles:
+      merchantsAreValid &&
+      validGlobalOpportunity &&
       approximatelyEqual(
         merchantOpportunity,
         globalOpportunity
       ),
 
     category_count_reconciles:
+      categoriesAreValid &&
+      validGlobalCount &&
       categoryCount === globalCount,
 
     merchant_count_reconciles:
+      merchantsAreValid &&
+      validGlobalCount &&
       merchantCount === globalCount,
-
-    event_count_reconciles:
-      events.length === globalCount,
-
-    transaction_uniqueness:
-      uniqueTransactionIds.size ===
-      events.length,
   };
 
   const passed =
@@ -107,18 +199,19 @@ const reconciliation =
       .every(Boolean);
 
   return {
+    valid: passed,
     passed,
 
     checks,
 
     totals: {
       global_count:
-        Number(globalCount || 0),
+        validGlobalCount
+          ? globalCount
+          : null,
 
       global_opportunity:
-        roundMoney(
-          globalOpportunity
-        ),
+        globalOpportunity,
 
       category_count:
         categoryCount,
@@ -131,12 +224,6 @@ const reconciliation =
 
       merchant_opportunity:
         merchantOpportunity,
-
-      event_count:
-        events.length,
-
-      unique_transaction_count:
-        uniqueTransactionIds.size,
     },
   };
 }
