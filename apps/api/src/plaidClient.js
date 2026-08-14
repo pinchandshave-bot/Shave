@@ -14,29 +14,24 @@ PlaidEnvironments,
 * * Real authorized financial data only.
 * * Read-only intelligence.
 * * No money movement.
-* * No synthetic/mock/seeded financial data.
+* * No synthetic, mock, or seeded financial data.
 *
-* Plaid capabilities iBag is building around:
+* Supported iBag intelligence domains:
+* * Auth
+* * Transactions
+* * Balance
+* * Identity
+* * Assets
+* * Liabilities
+* * Investments
+* * Statements
 *
-* 1. Auth
-* 2. Transactions
-* 3. Balance
-* 4. Identity
-* 5. Assets
-* 6. Liabilities
-* 7. Investments
-* 8. Statements
+* Balance is NOT a valid Link products value.
+* Plaid documents Balance as an endpoint/data capability that
+* is used alongside another initialized Plaid product.
 *
-* IMPORTANT:
-*
-* Balance is NOT a valid value for Link's products array.
-* Plaid automatically initializes Balance when another product
-* is initialized and Balance is retrieved through:
-*
-* /accounts/balance/get
-*
-* Assets and Statements have their own product workflows and
-* should not be treated as ordinary account-sync endpoints.
+* Assets uses the Asset Report workflow and is not treated as
+* an ordinary account-sync endpoint.
   */
 
 /* -------------------------------------------------------------------------- */
@@ -77,32 +72,73 @@ headers: {
 const plaidClient = new PlaidApi(configuration);
 
 /* -------------------------------------------------------------------------- */
-/* IBAG PRODUCT DEFINITIONS                                                   */
+/* PLAID PRODUCT DEFINITIONS                                                  */
 /* -------------------------------------------------------------------------- */
 
-const PLAID_REQUIRED_PRODUCTS = [
-"transactions",
-];
+/*
 
-const PLAID_OPTIONAL_PRODUCTS = [
-"auth",
-"identity",
-"investments",
-"liabilities",
-"statements",
-];
+* Transactions is the primary Phase 1 product.
+*
+* It provides the transaction foundation for:
+* * spending intelligence
+* * cash-flow intelligence
+* * merchant intelligence
+* * behavioral intelligence
+* * Round-Up intelligence
+    */
+    const PLAID_REQUIRED_PRODUCTS = [
+    "transactions",
+    ];
 
-const PLAID_SPECIALIZED_PRODUCTS = [
-"assets",
-];
+/*
 
-const IBAG_PLAID_PRODUCTS = Object.freeze({
-auth: {
-plaidProduct: "auth",
-linkMode: "optional",
-endpoint: "authGet",
-intelligenceDomain: "account_access",
-},
+* Optional products requested during Link.
+*
+* These are kept separate from the required product so iBag can
+* distinguish:
+*
+* requested
+* initialized
+* available
+* consented
+*
+* rather than assuming that every requested product is actually
+* available for a connected Item.
+  */
+  const PLAID_OPTIONAL_PRODUCTS = [
+  "auth",
+  "identity",
+  "investments",
+  "liabilities",
+  "statements",
+  ];
+
+/*
+
+* Specialized Plaid workflows.
+*
+* Assets is intentionally NOT placed into the ordinary optional
+* product array because iBag handles Assets through the Asset
+* Report workflow.
+  */
+  const PLAID_SPECIALIZED_PRODUCTS = [
+  "assets",
+  ];
+
+/*
+
+* Canonical internal iBag registry.
+*
+* This is an iBag representation of Plaid capabilities.
+* It is NOT passed directly to Plaid Link.
+  */
+  const IBAG_PLAID_PRODUCTS = Object.freeze({
+  auth: {
+  plaidProduct: "auth",
+  linkMode: "optional",
+  endpoint: "authGet",
+  intelligenceDomain: "account_access",
+  },
 
 transactions: {
 plaidProduct: "transactions",
@@ -149,7 +185,7 @@ intelligenceDomain: "investments",
 statements: {
 plaidProduct: "statements",
 linkMode: "optional",
-endpoint: "statements",
+endpoint: "statementsList",
 intelligenceDomain: "statements",
 },
 });
@@ -221,7 +257,7 @@ error,
 }
 
 /* -------------------------------------------------------------------------- */
-/* UPDATE-MODE LINK TOKEN                                                     */
+/* UPDATE MODE LINK TOKEN                                                     */
 /* -------------------------------------------------------------------------- */
 
 async function createUpdateModeLinkToken({
@@ -283,7 +319,7 @@ error,
 }
 
 /* -------------------------------------------------------------------------- */
-/* ITEM / PRODUCT DISCOVERY                                                   */
+/* ITEM                                                                        */
 /* -------------------------------------------------------------------------- */
 
 async function getItem(accessToken) {
@@ -308,6 +344,10 @@ error,
 );
 }
 }
+
+/* -------------------------------------------------------------------------- */
+/* PRODUCT COVERAGE                                                           */
+/* -------------------------------------------------------------------------- */
 
 async function getProductCoverage(accessToken) {
 const itemData = await getItem(accessToken);
@@ -353,8 +393,9 @@ consented: consentedProducts,
 
 balance: {
   available: true,
+  endpoint: "accountsBalanceGet",
   reason:
-    "Balance is automatically initialized and retrieved through accountsBalanceGet.",
+    "Balance is not requested as a Link product.",
 },
 
 specialized: PLAID_SPECIALIZED_PRODUCTS,
@@ -545,7 +586,7 @@ error,
 }
 
 /* -------------------------------------------------------------------------- */
-/* ASSETS                                                                     */
+/* ASSET REPORT                                                               */
 /* -------------------------------------------------------------------------- */
 
 async function createAssetReport({
@@ -564,7 +605,10 @@ access_tokens: [accessToken],
 days_requested: daysRequested,
 };
 
-if (options && typeof options === "object") {
+if (
+options &&
+typeof options === "object"
+) {
 request.options = options;
 }
 
@@ -642,7 +686,10 @@ error,
 /* ERROR NORMALIZATION                                                        */
 /* -------------------------------------------------------------------------- */
 
-function normalizePlaidError(error, fallbackCode) {
+function normalizePlaidError(
+error,
+fallbackCode
+) {
 const responseData =
 error?.response?.data || {};
 
@@ -668,7 +715,9 @@ fallbackCode,
 
   requestId:
     responseData.request_id ||
-    error?.response?.headers?.["plaid-request-id"] ||
+    error?.response?.headers?.[
+      "plaid-request-id"
+    ] ||
     null,
 
   displayMessage:
