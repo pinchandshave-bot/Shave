@@ -1,805 +1,34 @@
+require('dotenv').config();
+
+const express = require('express');
+const cors = require('cors');
+const rateLimit = require('express-rate-limit');
+
 const pool = require('./db');
 
-/**
- * Return the authenticated user's core iBag state.
- *
- * Read-only.
- * No financial data is created, modified, fabricated, or seeded.
- */
-async function getMe(req, res) {
-  try {
-    const userResult = await pool.query(
-      `
-        SELECT
-          id,
-          email,
-          created_at
-        FROM users
-        WHERE id = $1
-        LIMIT 1
-      `,
-      [req.user.id]
-    );
-
-    if (userResult.rows.length === 0) {
-      return res.status(404).json({
-        status: 'error',
-        message: 'User not found',
-      });
-    }
-
-    const user = userResult.rows[0];
-
-    const ibagResult = await pool.query(
-      `
-        SELECT
-          id,
-          user_id,
-          created_at
-        FROM ibags
-        WHERE user_id = $1
-        LIMIT 1
-      `,
-      [user.id]
-    );
-
-    const accountsResult = await pool.query(
-      `
-        SELECT
-          a.id,
-          a.plaid_account_id,
-          a.name,
-          a.mask,
-          a.type,
-          a.subtype,
-          a.current_balance,
-          a.available_balance,
-          a.balance_iso_currency_code,
-          a.balance_updated_at,
-          p.id AS plaid_item_db_id,
-          p.plaid_item_id,
-          p.institution_name
-        FROM accounts a
-        INNER JOIN plaid_items p
-          ON p.id = a.plaid_item_id
-        WHERE p.user_id = $1
-          AND p.status = 'active'
-        ORDER BY a.created_at ASC
-      `,
-      [user.id]
-    );
-
-    return res.json({
-      status: 'ok',
-      user,
-      ibag: ibagResult.rows[0] || null,
-      accounts: accountsResult.rows,
-    });
-  } catch (err) {
-    console.error('Get current user failed:', err);
-
-    return res.status(500).json({
-      status: 'error',
-      message: 'Unable to load your iBag right now',
-    });
-  }
-}
-
-
-/**
- * Dashboard financial state.
- *
- * Every value comes from the authenticated user's
- * existing database records.
- *
- * No fake, mock, seeded, or hard-coded financial data.
- */
-async function getDashboard(req, res) {
-  const userId = req.user.id;
-
-  try {
-    /*
-     * ----------------------------------------------------------------------
-     * ACCOUNTS / BALANCES
-     * ----------------------------------------------------------------------
-     */
-
-    const accountsResult = await pool.query(
-      `
-        SELECT
-          a.id,
-          a.plaid_account_id,
-          a.name,
-          a.mask,
-          a.type,
-          a.subtype,
-          a.current_balance,
-          a.available_balance,
-          a.balance_iso_currency_code,
-          a.balance_updated_at,
-          p.institution_name
-        FROM accounts a
-        INNER JOIN plaid_items p
-          ON p.id = a.plaid_item_id
-        WHERE p.user_id = $1
-          AND p.status = 'active'
-        ORDER BY a.created_at ASC
-      `,
-      [userId]
-    );
-
-    /*
-     * ----------------------------------------------------------------------
-     * TRANSACTION STATE
-     * ----------------------------------------------------------------------
-     */
-
-    const transactionStateResult = await pool.query(
-      `
-        SELECT
-          COUNT(*)::int AS transaction_count,
-
-          COUNT(*) FILTER (
-            WHERE t.pending = true
-          )::int AS pending_transaction_count,
-
-          COUNT(*) FILTER (
-            WHERE t.pending = false
-          )::int AS posted_transaction_count,
-
-          MIN(
-            COALESCE(
-              t.posted_date,
-              t.authorized_date
-            )
-          ) AS observation_start,
-
-          MAX(
-            COALESCE(
-              t.posted_date,
-              t.authorized_date
-            )
-          ) AS observation_end
-
-        FROM transactions t
-
-        INNER JOIN accounts a
-          ON a.id = t.account_id
-
-        INNER JOIN plaid_items p
-          ON p.id = a.plaid_item_id
-
-        WHERE p.user_id = $1
-          AND p.status = 'active'
-          AND t.status = 'active'
-      `,
-      [userId]
-    );
-
-    /*
-     * ----------------------------------------------------------------------
-     * ROUND-UP STATE
-     * ----------------------------------------------------------------------
-     *
-     * Analytical opportunity only.
-     * No money is moved.
-     */
-
-    const roundupStateResult = await pool.query(
-      `
-        SELECT
-          COUNT(*)::int AS eligible_purchase_count,
-
-          COALESCE(
-            SUM(r.roundup_amount),
-            0
-          ) AS roundup_opportunity,
-
-          COALESCE(
-            AVG(r.roundup_amount),
-            0
-          ) AS average_roundup,
-
-          COALESCE(
-            MIN(r.roundup_amount),
-            0
-          ) AS smallest_roundup,
-
-          COALESCE(
-            MAX(r.roundup_amount),
-            0
-          ) AS largest_roundup
-
-        FROM roundup_events r
-
-        INNER JOIN transactions t
-          ON t.id = r.transaction_id
-
-        INNER JOIN accounts a
-          ON a.id = t.account_id
-
-        INNER JOIN plaid_items p
-          ON p.id = a.plaid_item_id
-
-        WHERE r.user_id = $1
-          AND p.user_id = $1
-          AND p.status = 'active'
-          AND r.status = 'active'
-          AND r.eligible = true
-          AND t.status = 'active'
-      `,
-      [userId]
-    );
-
-    /*
-     * ----------------------------------------------------------------------
-     * ROUND-UP BY CATEGORY
-     * ----------------------------------------------------------------------
-     */
-
-    const roundupCategoryResult = await pool.query(
-      `
-        SELECT
-          COALESCE(
-            NULLIF(t.category, ''),
-            'Uncategorized'
-          ) AS category,
-
-          COUNT(*)::int AS purchase_count,
-
-          COALESCE(
-            SUM(r.roundup_amount),
-            0
-          ) AS roundup_opportunity
-
-        FROM roundup_events r
-
-        INNER JOIN transactions t
-          ON t.id = r.transaction_id
-
-        INNER JOIN accounts a
-          ON a.id = t.account_id
-
-        INNER JOIN plaid_items p
-          ON p.id = a.plaid_item_id
-
-        WHERE r.user_id = $1
-          AND p.user_id = $1
-          AND p.status = 'active'
-          AND r.status = 'active'
-          AND r.eligible = true
-          AND t.status = 'active'
-
-        GROUP BY
-          COALESCE(
-            NULLIF(t.category, ''),
-            'Uncategorized'
-          )
-
-        ORDER BY
-          roundup_opportunity DESC
-      `,
-      [userId]
-    );
-
-    /*
-     * ----------------------------------------------------------------------
-     * ROUND-UP BY MERCHANT
-     * ----------------------------------------------------------------------
-     */
-
-    const roundupMerchantResult = await pool.query(
-      `
-        SELECT
-          COALESCE(
-            NULLIF(t.merchant_name, ''),
-            'Unknown merchant'
-          ) AS merchant,
-
-          COUNT(*)::int AS purchase_count,
-
-          COALESCE(
-            SUM(r.roundup_amount),
-            0
-          ) AS roundup_opportunity,
-
-          COALESCE(
-            AVG(r.roundup_amount),
-            0
-          ) AS average_roundup
-
-        FROM roundup_events r
-
-        INNER JOIN transactions t
-          ON t.id = r.transaction_id
-
-        INNER JOIN accounts a
-          ON a.id = t.account_id
-
-        INNER JOIN plaid_items p
-          ON p.id = a.plaid_item_id
-
-        WHERE r.user_id = $1
-          AND p.user_id = $1
-          AND p.status = 'active'
-          AND r.status = 'active'
-          AND r.eligible = true
-          AND t.status = 'active'
-
-        GROUP BY
-          COALESCE(
-            NULLIF(t.merchant_name, ''),
-            'Unknown merchant'
-          )
-
-        ORDER BY
-          roundup_opportunity DESC
-      `,
-      [userId]
-    );
-
-    /*
-     * ----------------------------------------------------------------------
-     * RECENT ROUND-UP ACTIVITY
-     * ----------------------------------------------------------------------
-     */
-
-    const recentRoundupsResult = await pool.query(
-      `
-        SELECT
-          r.id,
-          r.transaction_id,
-          r.roundup_amount,
-          r.transaction_amount,
-          r.eligibility_reason,
-          r.rule_version,
-
-          t.merchant_name,
-          t.category,
-          t.amount,
-          t.iso_currency_code,
-          t.pending,
-          t.authorized_date,
-          t.posted_date,
-
-          a.name AS account_name,
-          a.mask AS account_mask
-
-        FROM roundup_events r
-
-        INNER JOIN transactions t
-          ON t.id = r.transaction_id
-
-        INNER JOIN accounts a
-          ON a.id = t.account_id
-
-        INNER JOIN plaid_items p
-          ON p.id = a.plaid_item_id
-
-        WHERE r.user_id = $1
-          AND p.user_id = $1
-          AND p.status = 'active'
-          AND r.status = 'active'
-          AND r.eligible = true
-          AND t.status = 'active'
-
-        ORDER BY
-          COALESCE(
-            t.posted_date,
-            t.authorized_date
-          ) DESC NULLS LAST,
-
-          t.created_at DESC
-
-        LIMIT 10
-      `,
-      [userId]
-    );
-
-    /*
-     * ----------------------------------------------------------------------
-     * NORMALIZE STATES
-     * ----------------------------------------------------------------------
-     */
-
-    const transactionState =
-      transactionStateResult.rows[0] || {
-        transaction_count: 0,
-        pending_transaction_count: 0,
-        posted_transaction_count: 0,
-        observation_start: null,
-        observation_end: null,
-      };
-
-    const roundupState =
-      roundupStateResult.rows[0] || {
-        eligible_purchase_count: 0,
-        roundup_opportunity: 0,
-        average_roundup: 0,
-        smallest_roundup: 0,
-        largest_roundup: 0,
-      };
-
-    /*
-     * ----------------------------------------------------------------------
-     * RETURN DASHBOARD
-     * ----------------------------------------------------------------------
-     */
-
-    return res.json({
-      status: 'ok',
-
-      user: null,
-
-      observation: {
-        earliest_transaction_date:
-          transactionState.observation_start,
-
-        latest_transaction_date:
-          transactionState.observation_end,
-      },
-
-      data_state: {
-        accounts_available:
-          accountsResult.rows.length > 0,
-
-        transactions_available:
-          Number(
-            transactionState.transaction_count
-          ) > 0,
-
-        roundup_available:
-          Number(
-            roundupState.eligible_purchase_count
-          ) > 0,
-      },
-
-      accounts: accountsResult.rows,
-
-      summary: {
-        transaction_count:
-          Number(
-            transactionState.transaction_count
-          ),
-
-        posted_transaction_count:
-          Number(
-            transactionState.posted_transaction_count
-          ),
-
-        pending_transaction_count:
-          Number(
-            transactionState.pending_transaction_count
-          ),
-
-        eligible_purchase_count:
-          Number(
-            roundupState.eligible_purchase_count
-          ),
-
-        roundup_opportunity:
-          roundupState.roundup_opportunity,
-      },
-
-      categories:
-        roundupCategoryResult.rows,
-
-      merchants:
-        roundupMerchantResult.rows,
-
-      recent_roundups:
-        recentRoundupsResult.rows,
-
-      transaction_state:
-        transactionState,
-
-      roundup:
-        roundupState,
-
-      roundup_by_category:
-        roundupCategoryResult.rows,
-
-      roundup_by_merchant:
-        roundupMerchantResult.rows,
-    });
-  } catch (err) {
-    console.error('Get dashboard failed:', err);
-
-    return res.status(500).json({
-      status: 'error',
-      message:
-        'Unable to load your financial dashboard',
-      detail:
-        process.env.NODE_ENV === 'production'
-          ? undefined
-          : err.message,
-    });
-  }
-}
-
-
-/**
- * Existing financial summary.
- */
-async function getSummary(req, res) {
-  try {
-    const result = await pool.query(
-      `
-        SELECT
-          COUNT(*)::int AS transaction_count,
-          COALESCE(
-            SUM(amount),
-            0
-          ) AS transaction_total
-
-        FROM transactions t
-
-        INNER JOIN accounts a
-          ON a.id = t.account_id
-
-        INNER JOIN plaid_items p
-          ON p.id = a.plaid_item_id
-
-        WHERE p.user_id = $1
-          AND p.status = 'active'
-          AND t.status = 'active'
-      `,
-      [req.user.id]
-    );
-
-    return res.json({
-      status: 'ok',
-      summary: result.rows[0],
-    });
-  } catch (err) {
-    console.error('Get summary failed:', err);
-
-    return res.status(500).json({
-      status: 'error',
-      message:
-        'Unable to load your financial summary',
-    });
-  }
-}
-
-
-/**
- * Connected financial accounts.
- */
-async function getAccounts(req, res) {
-  try {
-    const result = await pool.query(
-      `
-        SELECT
-          a.id,
-          a.plaid_account_id,
-          a.name,
-          a.mask,
-          a.type,
-          a.subtype,
-          a.current_balance,
-          a.available_balance,
-          a.balance_iso_currency_code,
-          a.balance_updated_at,
-          p.institution_name,
-          p.plaid_item_id
-
-        FROM accounts a
-
-        INNER JOIN plaid_items p
-          ON p.id = a.plaid_item_id
-
-        WHERE p.user_id = $1
-          AND p.status = 'active'
-
-        ORDER BY a.created_at ASC
-      `,
-      [req.user.id]
-    );
-
-    return res.json({
-      status: 'ok',
-      accounts: result.rows,
-    });
-  } catch (err) {
-    console.error('Get accounts failed:', err);
-
-    return res.status(500).json({
-      status: 'error',
-      message: 'Unable to load your accounts',
-    });
-  }
-}
-
-
-/**
- * Real transactions belonging to the authenticated user.
- */
-async function getTransactions(req, res) {
-  try {
-    const result = await pool.query(
-      `
-        SELECT
-          t.id,
-          t.account_id,
-          t.plaid_transaction_id,
-          t.amount,
-          t.iso_currency_code,
-          t.merchant_name,
-          t.category,
-          t.pending,
-          t.authorized_date,
-          t.posted_date,
-          t.status
-
-        FROM transactions t
-
-        INNER JOIN accounts a
-          ON a.id = t.account_id
-
-        INNER JOIN plaid_items p
-          ON p.id = a.plaid_item_id
-
-        WHERE p.user_id = $1
-          AND p.status = 'active'
-          AND t.status = 'active'
-
-        ORDER BY
-          COALESCE(
-            t.posted_date,
-            t.authorized_date
-          ) DESC NULLS LAST,
-
-          t.created_at DESC
-      `,
-      [req.user.id]
-    );
-
-    return res.json({
-      status: 'ok',
-      transactions: result.rows,
-    });
-  } catch (err) {
-    console.error(
-      'Get transactions failed:',
-      err
-    );
-
-    return res.status(500).json({
-      status: 'error',
-      message:
-        'Unable to load your transactions',
-    });
-  }
-}
-
-
-/**
- * Insights remain evidence-gated.
- */
-async function getInsights(req, res) {
-  try {
-    return res.json({
-      status: 'ok',
-      insights: [],
-    });
-  } catch (err) {
-    console.error(
-      'Get insights failed:',
-      err
-    );
-
-    return res.status(500).json({
-      status: 'error',
-      message:
-        'Unable to load your insights',
-    });
-  }
-}
-
-
-/**
- * Net worth.
- *
- * Compatibility endpoint.
- * Uses connected account current balances.
- */
-async function getNetWorth(req, res) {
-  try {
-    const result = await pool.query(
-      `
-        SELECT
-          COALESCE(
-            SUM(a.current_balance),
-            0
-          ) AS net_worth
-
-        FROM accounts a
-
-        INNER JOIN plaid_items p
-          ON p.id = a.plaid_item_id
-
-        WHERE p.user_id = $1
-          AND p.status = 'active'
-      `,
-      [req.user.id]
-    );
-
-    return res.json({
-      status: 'ok',
-      net_worth:
-        result.rows[0].net_worth,
-    });
-  } catch (err) {
-    console.error(
-      'Get net worth failed:',
-      err
-    );
-
-    return res.status(500).json({
-      status: 'error',
-      message:
-        'Unable to load your net worth',
-    });
-  }
-}
-
-
-/**
- * Income remains unavailable until a real
- * income-analysis path exists.
- */
-async function getIncome(req, res) {
-  try {
-    return res.json({
-      status: 'ok',
-      income: null,
-      message:
-        'Income analysis requires qualifying connected financial data.',
-    });
-  } catch (err) {
-    console.error(
-      'Get income failed:',
-      err
-    );
-
-    return res.status(500).json({
-      status: 'error',
-      message:
-        'Unable to load your income',
-    });
-  }
-}
-
-
-/**
- * Cash flow remains unavailable until a real
- * analysis path exists.
- */
-async function getCashFlow(req, res) {
-  try {
-    return res.json({
-      status: 'ok',
-      cash_flow: null,
-      message:
-        'Cash-flow analysis requires qualifying connected financial data.',
-    });
-  } catch (err) {
-    console.error(
-      'Get cash flow failed:',
-      err
-    );
-
-    return res.status(500).json({
-      status: 'error',
-      message:
-        'Unable to load your cash flow',
-    });
-  }
-}
-
-
-module.exports = {
+const {
+  plaidClient,
+  PLAID_PRODUCTS,
+} = require('./plaidClient');
+
+const {
+  encrypt,
+  decrypt,
+} = require('./crypto');
+
+const {
+  requireAuth,
+  requireInternalSecret,
+  signup,
+  login,
+} = require('./auth');
+
+const {
+  runSync,
+  syncOneItem,
+} = require('./sync');
+
+const {
   getMe,
   getDashboard,
   getSummary,
@@ -809,4 +38,672 @@ module.exports = {
   getNetWorth,
   getIncome,
   getCashFlow,
-};
+} = require('./me');
+
+const app = express();
+
+/*
+ * --------------------------------------------------------------------------
+ * RENDER / REVERSE PROXY
+ * --------------------------------------------------------------------------
+ *
+ * Render places the application behind a reverse proxy and forwards the
+ * original client address through X-Forwarded-For.
+ *
+ * express-rate-limit requires Express proxy trust to be configured so that
+ * client identification works correctly in this environment.
+ */
+
+app.set('trust proxy', 1);
+
+/*
+ * --------------------------------------------------------------------------
+ * CORS
+ * --------------------------------------------------------------------------
+ */
+
+app.use(
+  cors({
+    origin:
+      process.env.FRONTEND_ORIGIN ||
+      'https://shave.onrender.com',
+  }),
+);
+
+app.use(express.json());
+app.use(express.static('public'));
+
+/*
+ * --------------------------------------------------------------------------
+ * AUTHENTICATION RATE LIMITER
+ * --------------------------------------------------------------------------
+ */
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 8,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    status: 'error',
+    message: 'Too many attempts. Try again later.',
+  },
+});
+
+/*
+ * --------------------------------------------------------------------------
+ * SERVICE / HEALTH
+ * --------------------------------------------------------------------------
+ */
+
+app.get('/', (req, res) => {
+  res.json({
+    status: 'ok',
+    service: 'shave-api',
+    message: 'Shave API is running',
+  });
+});
+
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    service: 'ibag-api',
+    time: new Date().toISOString(),
+  });
+});
+
+app.get('/db-check', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `
+        SELECT
+          now() AS db_time,
+          count(*) AS user_count
+        FROM users
+      `,
+    );
+
+    return res.json({
+      status: 'ok',
+      db_time: result.rows[0].db_time,
+      user_count: result.rows[0].user_count,
+    });
+  } catch (err) {
+    console.error('Database check failed:', err);
+
+    return res.status(500).json({
+      status: 'error',
+      message: err.message,
+    });
+  }
+});
+
+/*
+ * --------------------------------------------------------------------------
+ * AUTHENTICATION
+ * --------------------------------------------------------------------------
+ */
+
+app.post(
+  '/auth/signup',
+  authLimiter,
+  signup,
+);
+
+app.post(
+  '/auth/login',
+  authLimiter,
+  login,
+);
+
+/*
+ * --------------------------------------------------------------------------
+ * AUTHENTICATED USER / DASHBOARD
+ * --------------------------------------------------------------------------
+ */
+
+app.get(
+  '/me',
+  requireAuth,
+  getMe,
+);
+
+app.get(
+  '/me/dashboard',
+  requireAuth,
+  getDashboard,
+);
+
+app.get(
+  '/me/summary',
+  requireAuth,
+  getSummary,
+);
+
+app.get(
+  '/me/accounts',
+  requireAuth,
+  getAccounts,
+);
+
+app.get(
+  '/me/transactions',
+  requireAuth,
+  getTransactions,
+);
+
+app.get(
+  '/me/insights',
+  requireAuth,
+  getInsights,
+);
+
+app.get(
+  '/me/net-worth',
+  requireAuth,
+  getNetWorth,
+);
+
+app.get(
+  '/me/income',
+  requireAuth,
+  getIncome,
+);
+
+app.get(
+  '/me/cash-flow',
+  requireAuth,
+  getCashFlow,
+);
+
+/*
+ * --------------------------------------------------------------------------
+ * PLAID
+ * --------------------------------------------------------------------------
+ */
+
+/*
+ * Create a new Plaid Link token.
+ */
+
+app.post(
+  '/plaid/create-link-token',
+  requireAuth,
+  async (req, res) => {
+    try {
+      const activeCount = await pool.query(
+        `
+          SELECT count(*)
+          FROM plaid_items
+          WHERE status = 'active'
+        `,
+      );
+
+      const CAPACITY_LIMIT = 9;
+
+      if (
+        Number(activeCount.rows[0].count) >=
+        CAPACITY_LIMIT
+      ) {
+        return res.status(503).json({
+          status: 'error',
+          message:
+            'Shave is at capacity for new bank connections right now. Try again soon.',
+        });
+      }
+
+      const response =
+        await plaidClient.linkTokenCreate({
+          user: {
+            client_user_id: req.user.id,
+          },
+          client_name: 'iBag',
+          products: PLAID_PRODUCTS,
+          country_codes: ['US'],
+          language: 'en',
+        });
+
+      return res.json({
+        status: 'ok',
+        link_token:
+          response.data.link_token,
+      });
+    } catch (err) {
+      console.error(
+        'Plaid create link token failed:',
+        err,
+      );
+
+      const detail =
+        err.response?.data ||
+        err.message;
+
+      return res.status(500).json({
+        status: 'error',
+        detail,
+      });
+    }
+  },
+);
+
+/*
+ * Create a Plaid update-mode Link token
+ * for an existing Item.
+ */
+
+app.post(
+  '/plaid/create-update-link-token',
+  requireAuth,
+  async (req, res) => {
+    try {
+      const {
+        plaid_item_id,
+      } = req.body;
+
+      if (!plaid_item_id) {
+        return res.status(400).json({
+          status: 'error',
+          message:
+            'plaid_item_id is required',
+        });
+      }
+
+      const itemRow =
+        await pool.query(
+          `
+            SELECT
+              id,
+              plaid_access_token_encrypted
+            FROM plaid_items
+            WHERE plaid_item_id = $1
+              AND user_id = $2
+            LIMIT 1
+          `,
+          [
+            plaid_item_id,
+            req.user.id,
+          ],
+        );
+
+      if (itemRow.rows.length === 0) {
+        return res.status(404).json({
+          status: 'error',
+          message:
+            'Item not found for this user',
+        });
+      }
+
+      const accessToken =
+        decrypt(
+          itemRow.rows[0]
+            .plaid_access_token_encrypted,
+        );
+
+      const response =
+        await plaidClient.linkTokenCreate({
+          user: {
+            client_user_id:
+              req.user.id,
+          },
+          client_name: 'iBag',
+          access_token:
+            accessToken,
+          additional_consented_products: [
+            'liabilities',
+            'investments',
+            'identity',
+          ],
+          country_codes: ['US'],
+          language: 'en',
+        });
+
+      return res.json({
+        status: 'ok',
+        link_token:
+          response.data.link_token,
+      });
+    } catch (err) {
+      console.error(
+        'Plaid update link token failed:',
+        err,
+      );
+
+      const detail =
+        err.response?.data ||
+        err.message;
+
+      return res.status(500).json({
+        status: 'error',
+        detail,
+      });
+    }
+  },
+);
+
+/*
+ * Exchange Plaid public token for access token.
+ */
+
+app.post(
+  '/plaid/exchange-public-token',
+  requireAuth,
+  async (req, res) => {
+    try {
+      const {
+        public_token,
+        institution_name,
+      } = req.body;
+
+      if (!public_token) {
+        return res.status(400).json({
+          status: 'error',
+          message:
+            'public_token is required',
+        });
+      }
+
+      const exchangeRes =
+        await plaidClient.itemPublicTokenExchange({
+          public_token,
+        });
+
+      const access_token =
+        exchangeRes.data.access_token;
+
+      const plaid_item_id =
+        exchangeRes.data.item_id;
+
+      const userId =
+        req.user.id;
+
+      const encryptedToken =
+        encrypt(access_token);
+
+      const itemInsert =
+        await pool.query(
+          `
+            INSERT INTO plaid_items
+            (
+              user_id,
+              plaid_item_id,
+              plaid_access_token_encrypted,
+              institution_name
+            )
+            VALUES
+            ($1, $2, $3, $4)
+            RETURNING id
+          `,
+          [
+            userId,
+            plaid_item_id,
+            encryptedToken,
+            institution_name ||
+              null,
+          ],
+        );
+
+      const plaidItemDbId =
+        itemInsert.rows[0].id;
+
+      const accountsRes =
+        await plaidClient.accountsGet({
+          access_token,
+        });
+
+      for (
+        const acct of
+        accountsRes.data.accounts
+      ) {
+        await pool.query(
+          `
+            INSERT INTO accounts
+            (
+              plaid_item_id,
+              plaid_account_id,
+              name,
+              type,
+              subtype,
+              mask,
+              current_balance,
+              available_balance,
+              balance_iso_currency_code,
+              balance_updated_at
+            )
+            VALUES
+            (
+              $1,
+              $2,
+              $3,
+              $4,
+              $5,
+              $6,
+              $7,
+              $8,
+              $9,
+              now()
+            )
+            ON CONFLICT
+              (plaid_account_id)
+            DO UPDATE SET
+              name =
+                EXCLUDED.name,
+              type =
+                EXCLUDED.type,
+              subtype =
+                EXCLUDED.subtype,
+              mask =
+                EXCLUDED.mask,
+              current_balance =
+                EXCLUDED.current_balance,
+              available_balance =
+                EXCLUDED.available_balance,
+              balance_iso_currency_code =
+                EXCLUDED.balance_iso_currency_code,
+              balance_updated_at =
+                now()
+          `,
+          [
+            plaidItemDbId,
+            acct.account_id,
+            acct.name,
+            acct.type,
+            acct.subtype,
+            acct.mask,
+            acct.balances?.current ?? null,
+            acct.balances?.available ?? null,
+            acct.balances?.iso_currency_code ||
+              'USD',
+          ],
+        );
+      }
+
+      let immediateSyncResult = null;
+
+      try {
+        const freshItem =
+          await pool.query(
+            `
+              SELECT
+                id,
+                plaid_item_id,
+                plaid_access_token_encrypted,
+                cursor
+              FROM plaid_items
+              WHERE id = $1
+            `,
+            [plaidItemDbId],
+          );
+
+        if (
+          freshItem.rows.length > 0
+        ) {
+          immediateSyncResult =
+            await syncOneItem(
+              freshItem.rows[0],
+            );
+        }
+      } catch (syncErr) {
+        console.error(
+          'Immediate post-link sync failed (non-fatal):',
+          syncErr.message,
+        );
+      }
+
+      return res.json({
+        status: 'ok',
+        plaid_item_id,
+        accounts_stored:
+          accountsRes.data.accounts.length,
+        immediate_sync:
+          immediateSyncResult,
+      });
+    } catch (err) {
+      console.error(
+        'Plaid public token exchange failed:',
+        err,
+      );
+
+      const detail =
+        err.response?.data ||
+        err.message;
+
+      return res.status(500).json({
+        status: 'error',
+        detail,
+      });
+    }
+  },
+);
+
+/*
+ * Re-sync an existing Plaid Item after
+ * an update-mode Link flow.
+ */
+
+app.post(
+  '/plaid/resync-after-update',
+  requireAuth,
+  async (req, res) => {
+    try {
+      const {
+        plaid_item_id,
+      } = req.body;
+
+      if (!plaid_item_id) {
+        return res.status(400).json({
+          status: 'error',
+          message:
+            'plaid_item_id is required',
+        });
+      }
+
+      const itemRow =
+        await pool.query(
+          `
+            SELECT
+              id,
+              plaid_item_id,
+              plaid_access_token_encrypted,
+              cursor
+            FROM plaid_items
+            WHERE plaid_item_id = $1
+              AND user_id = $2
+            LIMIT 1
+          `,
+          [
+            plaid_item_id,
+            req.user.id,
+          ],
+        );
+
+      if (itemRow.rows.length === 0) {
+        return res.status(404).json({
+          status: 'error',
+          message:
+            'Item not found for this user',
+        });
+      }
+
+      const result =
+        await syncOneItem(
+          itemRow.rows[0],
+        );
+
+      return res.json({
+        status: 'ok',
+        result,
+      });
+    } catch (err) {
+      console.error(
+        'Plaid resync failed:',
+        err,
+      );
+
+      return res.status(500).json({
+        status: 'error',
+        message: err.message,
+      });
+    }
+  },
+);
+
+/*
+ * --------------------------------------------------------------------------
+ * INTERNAL SYNCHRONIZATION
+ * --------------------------------------------------------------------------
+ */
+
+app.post(
+  '/internal/sync/run',
+  requireInternalSecret,
+  runSync,
+);
+
+/*
+ * --------------------------------------------------------------------------
+ * 404
+ * --------------------------------------------------------------------------
+ */
+
+app.use((req, res) => {
+  res.status(404).json({
+    status: 'error',
+    message: 'Not found',
+  });
+});
+
+/*
+ * --------------------------------------------------------------------------
+ * GLOBAL ERROR HANDLER
+ * --------------------------------------------------------------------------
+ */
+
+app.use(
+  (err, req, res, next) => {
+    console.error(
+      'Unhandled error:',
+      err,
+    );
+
+    return res.status(500).json({
+      status: 'error',
+      message:
+        'Internal server error',
+    });
+  },
+);
+
+/*
+ * --------------------------------------------------------------------------
+ * SERVER
+ * --------------------------------------------------------------------------
+ */
+
+const PORT =
+  process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+  console.log(
+    `shave-api listening on port ${PORT}`,
+  );
+});
