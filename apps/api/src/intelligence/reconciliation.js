@@ -22,13 +22,20 @@ function sum(values) {
   );
 }
 
-function reconcileRoundupAggregate({
-  events,
-  globalCount,
-  globalOpportunity,
-  categories,
-  merchants,
-}) {
+const reconciliation =
+  reconcileRoundupAggregate({
+    events: eligibleEvents,
+
+    globalCount:
+      eligibleEvents.length,
+
+    globalOpportunity:
+      round(opportunity),
+
+    categories,
+
+    merchants,
+  });
   const categoryOpportunity =
     roundMoney(
       sum(
