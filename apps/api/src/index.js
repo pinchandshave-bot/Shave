@@ -1,4 +1,3 @@
-```javascript
 require('dotenv').config();
 
 const express = require('express');
@@ -9,6 +8,7 @@ const pool = require('./db');
 
 const {
   plaidClient,
+  PLAID_PRODUCTS,
 } = require('./plaidClient');
 
 const {
@@ -72,7 +72,9 @@ for (
     'function'
   ) {
     throw new Error(
-      `Startup configuration error: "${name}" is not exported as a function.`
+      'Startup configuration error: "' +
+        name +
+        '" is not exported as a function.'
     );
   }
 }
@@ -106,7 +108,7 @@ for (
   )
 ) {
   console.log(
-    `${name}:`,
+    name + ':',
     typeof handler ===
       'function'
       ? 'available'
@@ -135,8 +137,6 @@ app.use(
  * Plaid signs the raw body received by the webhook endpoint.
  * The body must therefore be captured before Express converts it
  * into a JavaScript object.
- *
- * We only retain rawBody for the Plaid webhook endpoint.
  */
 app.use(
   express.json({
@@ -211,7 +211,9 @@ function registerOptionalGet(
       res.status(501).json({
         status: 'error',
         message:
-          `The endpoint ${path} is not implemented by the current API read module.`,
+          'The endpoint ' +
+          path +
+          ' is not implemented by the current API read module.',
       });
     }
   );
@@ -297,14 +299,6 @@ app.get(
 /* PLAID WEBHOOK                                                              */
 /* -------------------------------------------------------------------------- */
 
-/*
- * Plaid calls this endpoint directly.
- *
- * This route intentionally does NOT use requireAuth.
- *
- * Authentication is performed by plaidWebhook() using Plaid's
- * signed plaid-verification JWT and the exact raw request body.
- */
 app.post(
   '/plaid/webhook',
   plaidWebhook
@@ -425,23 +419,6 @@ registerOptionalGet(
 /* PLAID                                                                      */
 /* -------------------------------------------------------------------------- */
 
-/*
- * STEP 1
- *
- * Creates the short-lived Plaid Link token for an authenticated
- * iBag user.
- *
- * This endpoint does NOT:
- *
- * - exchange a public_token
- * - create a plaid_items record
- * - store an access_token
- * - retrieve accounts
- * - retrieve transactions
- * - calculate Round-Ups
- * - move money
- */
-
 app.post(
   '/plaid/create-link-token',
   requireAuth,
@@ -514,21 +491,14 @@ app.post(
             client_name:
               'iBag',
 
+            products:
+              PLAID_PRODUCTS,
+
             country_codes:
               ['US'],
 
             language:
               'en',
-
-            products:
-              [
-                'transactions',
-              ],
-
-            transactions: {
-              days_requested:
-                730,
-            },
 
             webhook:
               webhookUrl,
@@ -1094,4 +1064,3 @@ app.listen(
     );
   }
 );
-```
