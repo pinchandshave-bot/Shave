@@ -87,14 +87,9 @@ async function getMe(req, res) {
 
 
 /**
- * Dashboard financial state.
+ * Primary authenticated dashboard.
  *
- * This endpoint is intentionally kept independent from the
- * financial-intelligence engine so the base dashboard remains
- * stable and readable from the existing database schema.
- *
- * Every financial value comes from the authenticated user's
- * existing database records.
+ * Uses only columns known to exist in the current schema.
  */
 async function getDashboard(req, res) {
   const userId = req.user.id;
@@ -102,7 +97,7 @@ async function getDashboard(req, res) {
   try {
     /*
      * ----------------------------------------------------------------------
-     * ACCOUNTS / BALANCES
+     * ACCOUNTS
      * ----------------------------------------------------------------------
      */
 
@@ -119,7 +114,8 @@ async function getDashboard(req, res) {
           a.available_balance,
           a.balance_iso_currency_code,
           a.balance_updated_at,
-          p.institution_name
+          p.institution_name,
+          p.plaid_item_id
         FROM accounts a
         INNER JOIN plaid_items p
           ON p.id = a.plaid_item_id
@@ -150,17 +146,11 @@ async function getDashboard(req, res) {
           )::int AS posted_transaction_count,
 
           MIN(
-            COALESCE(
-              t.posted_date,
-              t.authorized_date
-            )
+            COALESCE(t.posted_date, t.authorized_date)
           ) AS observation_start,
 
           MAX(
-            COALESCE(
-              t.posted_date,
-              t.authorized_date
-            )
+            COALESCE(t.posted_date, t.authorized_date)
           ) AS observation_end
 
         FROM transactions t
@@ -182,14 +172,6 @@ async function getDashboard(req, res) {
      * ----------------------------------------------------------------------
      * ROUND-UP STATE
      * ----------------------------------------------------------------------
-     *
-     * This represents analytical Round-Up opportunity.
-     *
-     * It is NOT:
-     * - money transferred
-     * - money saved
-     * - money moved
-     * - a balance adjustment
      */
 
     const roundupStateResult = await pool.query(
@@ -347,7 +329,7 @@ async function getDashboard(req, res) {
 
     /*
      * ----------------------------------------------------------------------
-     * RECENT ROUND-UP ACTIVITY
+     * RECENT ROUND-UPS
      * ----------------------------------------------------------------------
      */
 
@@ -393,19 +375,12 @@ async function getDashboard(req, res) {
             t.posted_date,
             t.authorized_date
           ) DESC NULLS LAST,
-
           t.created_at DESC
 
         LIMIT 10
       `,
       [userId]
     );
-
-    /*
-     * ----------------------------------------------------------------------
-     * NORMALIZE EMPTY STATES
-     * ----------------------------------------------------------------------
-     */
 
     const transactionState =
       transactionStateResult.rows[0] || {
@@ -425,12 +400,6 @@ async function getDashboard(req, res) {
         largest_roundup: 0,
       };
 
-    /*
-     * ----------------------------------------------------------------------
-     * RESPONSE
-     * ----------------------------------------------------------------------
-     */
-
     return res.json({
       status: 'ok',
 
@@ -439,9 +408,7 @@ async function getDashboard(req, res) {
           accountsResult.rows.length > 0,
 
         transactions_available:
-          Number(
-            transactionState.transaction_count
-          ) > 0,
+          Number(transactionState.transaction_count) > 0,
 
         roundup_available:
           Number(
@@ -449,14 +416,11 @@ async function getDashboard(req, res) {
           ) > 0,
       },
 
-      accounts:
-        accountsResult.rows,
+      accounts: accountsResult.rows,
 
-      transaction_state:
-        transactionState,
+      transaction_state: transactionState,
 
-      roundup:
-        roundupState,
+      roundup: roundupState,
 
       roundup_by_category:
         roundupCategoryResult.rows,
@@ -468,22 +432,18 @@ async function getDashboard(req, res) {
         recentRoundupsResult.rows,
     });
   } catch (err) {
-    console.error(
-      'Get dashboard failed:',
-      err
-    );
+    console.error('Get dashboard failed:', err);
 
     return res.status(500).json({
       status: 'error',
-      message:
-        'Unable to load your financial dashboard',
+      message: 'Unable to load your financial dashboard',
     });
   }
 }
 
 
 /**
- * Existing financial summary.
+ * Financial summary.
  */
 async function getSummary(req, res) {
   try {
@@ -491,19 +451,12 @@ async function getSummary(req, res) {
       `
         SELECT
           COUNT(*)::int AS transaction_count,
-          COALESCE(
-            SUM(amount),
-            0
-          ) AS transaction_total
-
+          COALESCE(SUM(t.amount), 0) AS transaction_total
         FROM transactions t
-
         INNER JOIN accounts a
           ON a.id = t.account_id
-
         INNER JOIN plaid_items p
           ON p.id = a.plaid_item_id
-
         WHERE p.user_id = $1
           AND p.status = 'active'
           AND t.status = 'active'
@@ -516,22 +469,18 @@ async function getSummary(req, res) {
       summary: result.rows[0],
     });
   } catch (err) {
-    console.error(
-      'Get summary failed:',
-      err
-    );
+    console.error('Get summary failed:', err);
 
     return res.status(500).json({
       status: 'error',
-      message:
-        'Unable to load your financial summary',
+      message: 'Unable to load your financial summary',
     });
   }
 }
 
 
 /**
- * Connected financial accounts.
+ * Connected accounts.
  */
 async function getAccounts(req, res) {
   try {
@@ -550,15 +499,11 @@ async function getAccounts(req, res) {
           a.balance_updated_at,
           p.institution_name,
           p.plaid_item_id
-
         FROM accounts a
-
         INNER JOIN plaid_items p
           ON p.id = a.plaid_item_id
-
         WHERE p.user_id = $1
           AND p.status = 'active'
-
         ORDER BY a.created_at ASC
       `,
       [req.user.id]
@@ -569,22 +514,18 @@ async function getAccounts(req, res) {
       accounts: result.rows,
     });
   } catch (err) {
-    console.error(
-      'Get accounts failed:',
-      err
-    );
+    console.error('Get accounts failed:', err);
 
     return res.status(500).json({
       status: 'error',
-      message:
-        'Unable to load your accounts',
+      message: 'Unable to load your accounts',
     });
   }
 }
 
 
 /**
- * Real transactions belonging to the authenticated user.
+ * Real transactions.
  */
 async function getTransactions(req, res) {
   try {
@@ -620,7 +561,6 @@ async function getTransactions(req, res) {
             t.posted_date,
             t.authorized_date
           ) DESC NULLS LAST,
-
           t.created_at DESC
       `,
       [req.user.id]
@@ -631,27 +571,18 @@ async function getTransactions(req, res) {
       transactions: result.rows,
     });
   } catch (err) {
-    console.error(
-      'Get transactions failed:',
-      err
-    );
+    console.error('Get transactions failed:', err);
 
     return res.status(500).json({
       status: 'error',
-      message:
-        'Unable to load your transactions',
+      message: 'Unable to load your transactions',
     });
   }
 }
 
 
 /**
- * Insights compatibility endpoint.
- *
- * Intelligence is deliberately not duplicated here.
- * The authoritative intelligence engine can be wired into
- * this endpoint separately without changing the dashboard
- * database contract.
+ * Evidence-gated intelligence.
  */
 async function getInsights(req, res) {
   try {
@@ -660,26 +591,18 @@ async function getInsights(req, res) {
       insights: [],
     });
   } catch (err) {
-    console.error(
-      'Get insights failed:',
-      err
-    );
+    console.error('Get insights failed:', err);
 
     return res.status(500).json({
       status: 'error',
-      message:
-        'Unable to load your insights',
+      message: 'Unable to load your insights',
     });
   }
 }
 
 
 /**
- * Net worth compatibility endpoint.
- *
- * Retained for the existing API contract.
- *
- * This represents connected-account current balances.
+ * Connected-account balance aggregation.
  */
 async function getNetWorth(req, res) {
   try {
@@ -704,29 +627,22 @@ async function getNetWorth(req, res) {
 
     return res.json({
       status: 'ok',
-      net_worth:
-        result.rows[0].net_worth,
+      net_worth: result.rows[0].net_worth,
     });
   } catch (err) {
-    console.error(
-      'Get net worth failed:',
-      err
-    );
+    console.error('Get net worth failed:', err);
 
     return res.status(500).json({
       status: 'error',
-      message:
-        'Unable to load your net worth',
+      message: 'Unable to load your net worth',
     });
   }
 }
 
 
 /**
- * Income compatibility endpoint.
- *
- * Kept evidence-gated until the authoritative
- * intelligence engine is connected to this route.
+ * Income analysis remains unavailable until qualifying
+ * real financial evidence exists.
  */
 async function getIncome(req, res) {
   try {
@@ -737,25 +653,19 @@ async function getIncome(req, res) {
         'Income analysis requires qualifying connected financial data.',
     });
   } catch (err) {
-    console.error(
-      'Get income failed:',
-      err
-    );
+    console.error('Get income failed:', err);
 
     return res.status(500).json({
       status: 'error',
-      message:
-        'Unable to load your income',
+      message: 'Unable to load your income',
     });
   }
 }
 
 
 /**
- * Cash-flow compatibility endpoint.
- *
- * Kept evidence-gated until the authoritative
- * intelligence engine is connected to this route.
+ * Cash-flow analysis remains unavailable until qualifying
+ * real financial evidence exists.
  */
 async function getCashFlow(req, res) {
   try {
@@ -766,15 +676,11 @@ async function getCashFlow(req, res) {
         'Cash-flow analysis requires qualifying connected financial data.',
     });
   } catch (err) {
-    console.error(
-      'Get cash flow failed:',
-      err
-    );
+    console.error('Get cash flow failed:', err);
 
     return res.status(500).json({
       status: 'error',
-      message:
-        'Unable to load your cash flow',
+      message: 'Unable to load your cash flow',
     });
   }
 }
