@@ -1,3 +1,4 @@
+```javascript
 require('dotenv').config();
 
 const express = require('express');
@@ -8,7 +9,6 @@ const pool = require('./db');
 
 const {
   plaidClient,
-  PLAID_PRODUCTS,
 } = require('./plaidClient');
 
 const {
@@ -27,6 +27,10 @@ const {
   runSync,
   syncOneItem,
 } = require('./sync');
+
+const {
+  plaidWebhook,
+} = require('./plaidWebhook');
 
 const me = require('./me');
 
@@ -48,6 +52,7 @@ const requiredHandlers = {
   login,
   runSync,
   syncOneItem,
+  plaidWebhook,
   getDashboard:
     me.getDashboard,
   getFinancialIntelligence,
@@ -124,8 +129,33 @@ app.use(
 );
 
 
+/*
+ * Capture the exact raw request body for Plaid webhook verification.
+ *
+ * Plaid signs the raw body received by the webhook endpoint.
+ * The body must therefore be captured before Express converts it
+ * into a JavaScript object.
+ *
+ * We only retain rawBody for the Plaid webhook endpoint.
+ */
 app.use(
-  express.json()
+  express.json({
+    verify: (
+      req,
+      res,
+      buffer
+    ) => {
+      if (
+        req.path ===
+        '/plaid/webhook'
+      ) {
+        req.rawBody =
+          Buffer.from(
+            buffer
+          );
+      }
+    },
+  })
 );
 
 
@@ -264,6 +294,24 @@ app.get(
 
 
 /* -------------------------------------------------------------------------- */
+/* PLAID WEBHOOK                                                              */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * Plaid calls this endpoint directly.
+ *
+ * This route intentionally does NOT use requireAuth.
+ *
+ * Authentication is performed by plaidWebhook() using Plaid's
+ * signed plaid-verification JWT and the exact raw request body.
+ */
+app.post(
+  '/plaid/webhook',
+  plaidWebhook
+);
+
+
+/* -------------------------------------------------------------------------- */
 /* AUTH                                                                       */
 /* -------------------------------------------------------------------------- */
 
@@ -377,6 +425,23 @@ registerOptionalGet(
 /* PLAID                                                                      */
 /* -------------------------------------------------------------------------- */
 
+/*
+ * STEP 1
+ *
+ * Creates the short-lived Plaid Link token for an authenticated
+ * iBag user.
+ *
+ * This endpoint does NOT:
+ *
+ * - exchange a public_token
+ * - create a plaid_items record
+ * - store an access_token
+ * - retrieve accounts
+ * - retrieve transactions
+ * - calculate Round-Ups
+ * - move money
+ */
+
 app.post(
   '/plaid/create-link-token',
   requireAuth,
@@ -412,33 +477,85 @@ app.post(
         });
       }
 
+
+      const webhookUrl =
+        process.env
+          .PLAID_WEBHOOK_URL;
+
+
+      if (!webhookUrl) {
+        throw new Error(
+          'PLAID_WEBHOOK_URL is not configured'
+        );
+      }
+
+
+      if (
+        !/^https?:\/\/.+/.test(
+          webhookUrl
+        )
+      ) {
+        throw new Error(
+          'PLAID_WEBHOOK_URL must be a valid HTTP or HTTPS URL'
+        );
+      }
+
+
       const response =
         await plaidClient
           .linkTokenCreate({
             user: {
               client_user_id:
-                req.user.id,
+                String(
+                  req.user.id
+                ),
             },
 
             client_name:
               'iBag',
-
-            products:
-              PLAID_PRODUCTS,
 
             country_codes:
               ['US'],
 
             language:
               'en',
+
+            products:
+              [
+                'transactions',
+              ],
+
+            transactions: {
+              days_requested:
+                730,
+            },
+
+            webhook:
+              webhookUrl,
           });
+
+
+      const linkToken =
+        response?.data
+          ?.link_token;
+
+
+      if (!linkToken) {
+        throw new Error(
+          'Plaid did not return a link_token'
+        );
+      }
+
 
       return res.json({
         status: 'ok',
 
         link_token:
+          linkToken,
+
+        expiration:
           response.data
-            .link_token,
+            .expiration,
       });
     } catch (err) {
       console.error(
@@ -446,12 +563,21 @@ app.post(
         err
       );
 
-      return res.status(500).json({
+      return res.status(502).json({
         status: 'error',
 
+        message:
+          'Unable to create a Plaid Link session.',
+
         detail:
-          err.response?.data ||
-          err.message,
+          process.env.NODE_ENV ===
+          'production'
+            ? undefined
+            : (
+                err.response
+                  ?.data ||
+                err.message
+              ),
       });
     }
   }
@@ -523,7 +649,9 @@ app.post(
           .linkTokenCreate({
             user: {
               client_user_id:
-                req.user.id,
+                String(
+                  req.user.id
+                ),
             },
 
             client_name:
@@ -552,6 +680,10 @@ app.post(
         link_token:
           response.data
             .link_token,
+
+        expiration:
+          response.data
+            .expiration,
       });
     } catch (err) {
       console.error(
@@ -559,12 +691,21 @@ app.post(
         err
       );
 
-      return res.status(500).json({
+      return res.status(502).json({
         status: 'error',
 
+        message:
+          'Unable to create a Plaid update Link session.',
+
         detail:
-          err.response?.data ||
-          err.message,
+          process.env.NODE_ENV ===
+          'production'
+            ? undefined
+            : (
+                err.response
+                  ?.data ||
+                err.message
+              ),
       });
     }
   }
@@ -784,12 +925,21 @@ app.post(
         err
       );
 
-      return res.status(500).json({
+      return res.status(502).json({
         status: 'error',
 
+        message:
+          'Unable to complete the Plaid Item connection.',
+
         detail:
-          err.response?.data ||
-          err.message,
+          process.env.NODE_ENV ===
+          'production'
+            ? undefined
+            : (
+                err.response
+                  ?.data ||
+                err.message
+              ),
       });
     }
   }
@@ -944,3 +1094,4 @@ app.listen(
     );
   }
 );
+```
