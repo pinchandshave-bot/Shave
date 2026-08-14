@@ -4,31 +4,27 @@ const {
   getFinancialIntelligence,
 } = require('./intelligence');
 
-const {
-  computeIncomeSignals,
-  computeCashflowRunway,
-} = require('./income');
 
+/* ============================================================================
+ * CURRENT USER
+ * ========================================================================== */
 
 async function getMe(req, res) {
   try {
-    const userResult =
-      await pool.query(
-        `
-          SELECT
-            id,
-            email,
-            created_at
-          FROM users
-          WHERE id = $1
-          LIMIT 1
-        `,
-        [req.user.id]
-      );
+    const userResult = await pool.query(
+      `
+        SELECT
+          id,
+          email,
+          created_at
+        FROM users
+        WHERE id = $1
+        LIMIT 1
+      `,
+      [req.user.id]
+    );
 
-    if (
-      userResult.rows.length === 0
-    ) {
+    if (userResult.rows.length === 0) {
       return res.status(404).json({
         status: 'error',
         message: 'User not found',
@@ -59,7 +55,6 @@ async function getMe(req, res) {
             a.id,
             a.plaid_account_id,
             a.name,
-            a.official_name,
             a.mask,
             a.type,
             a.subtype,
@@ -67,6 +62,7 @@ async function getMe(req, res) {
             a.available_balance,
             a.balance_iso_currency_code,
             a.balance_updated_at,
+
             p.id AS plaid_item_db_id,
             p.plaid_item_id,
             p.institution_name
@@ -86,10 +82,13 @@ async function getMe(req, res) {
 
     return res.json({
       status: 'ok',
+
       user,
+
       ibag:
         ibagResult.rows[0] ||
         null,
+
       accounts:
         accountsResult.rows,
     });
@@ -108,137 +107,24 @@ async function getMe(req, res) {
 }
 
 
-async function getDashboard(req, res) {
-  const userId =
-    req.user.id;
+/* ============================================================================
+ * DASHBOARD
+ * ========================================================================== */
 
+async function getDashboard(req, res) {
   try {
+    const userId =
+      req.user.id;
+
     /*
-     * Core intelligence engine.
+     * The dashboard now gets its financial intelligence
+     * from ONE authoritative engine.
      */
 
     const intelligence =
       await getFinancialIntelligence(
         userId
       );
-
-    /*
-     * Income is independently evidence-gated.
-     */
-
-    let income = null;
-
-    try {
-      income =
-        await computeIncomeSignals(
-          userId
-        );
-    } catch (incomeError) {
-      console.error(
-        'Income intelligence failed:',
-        incomeError
-      );
-
-      income = {
-        evidence_state:
-          'unavailable',
-        signal: null,
-        candidates: [],
-      };
-    }
-
-    /*
-     * Runway is independently evidence-gated.
-     */
-
-    let runway = null;
-
-    try {
-      runway =
-        await computeCashflowRunway(
-          userId
-        );
-    } catch (runwayError) {
-      console.error(
-        'Runway intelligence failed:',
-        runwayError
-      );
-
-      runway = {
-        evidence_state:
-          'unavailable',
-        status:
-          'unavailable',
-        total_cash: null,
-        runway_days: null,
-      };
-    }
-
-    /*
-     * Base transaction state.
-     */
-
-    const transactionStateResult =
-      await pool.query(
-        `
-          SELECT
-            COUNT(*)::int
-              AS transaction_count,
-
-            COUNT(*) FILTER (
-              WHERE t.pending = true
-            )::int
-              AS pending_transaction_count,
-
-            COUNT(*) FILTER (
-              WHERE t.pending = false
-            )::int
-              AS posted_transaction_count,
-
-            MIN(
-              COALESCE(
-                t.posted_date,
-                t.authorized_date
-              )
-            )
-              AS observation_start,
-
-            MAX(
-              COALESCE(
-                t.posted_date,
-                t.authorized_date
-              )
-            )
-              AS observation_end
-
-          FROM transactions t
-
-          INNER JOIN accounts a
-            ON a.id = t.account_id
-
-          INNER JOIN plaid_items p
-            ON p.id = a.plaid_item_id
-
-          WHERE p.user_id = $1
-            AND p.status = 'active'
-            AND t.status = 'active'
-        `,
-        [userId]
-      );
-
-    const transactionState =
-      transactionStateResult.rows[0] ||
-      {
-        transaction_count: 0,
-        pending_transaction_count: 0,
-        posted_transaction_count: 0,
-        observation_start: null,
-        observation_end: null,
-      };
-
-    /*
-     * Account state.
-     */
 
     const accountsResult =
       await pool.query(
@@ -247,7 +133,6 @@ async function getDashboard(req, res) {
             a.id,
             a.plaid_account_id,
             a.name,
-            a.official_name,
             a.mask,
             a.type,
             a.subtype,
@@ -270,202 +155,65 @@ async function getDashboard(req, res) {
         [userId]
       );
 
-    /*
-     * Round-Up category/merchant data.
-     */
-
-    const categoryResult =
+    const transactionStateResult =
       await pool.query(
         `
           SELECT
-            COALESCE(
-              NULLIF(
-                t.category,
-                ''
-              ),
-              'Uncategorized'
-            ) AS category,
+            COUNT(*)::int AS transaction_count,
 
-            COUNT(*)::int
-              AS purchase_count,
+            COUNT(*) FILTER (
+              WHERE t.pending = true
+            )::int AS pending_transaction_count,
 
-            COALESCE(
-              SUM(
-                r.roundup_amount
-              ),
-              0
-            ) AS roundup_opportunity,
+            COUNT(*) FILTER (
+              WHERE t.pending = false
+            )::int AS posted_transaction_count,
 
-            COALESCE(
-              AVG(
-                r.roundup_amount
-              ),
-              0
-            ) AS average_roundup
+            MIN(
+              COALESCE(
+                t.posted_date,
+                t.authorized_date
+              )
+            ) AS observation_start,
 
-          FROM roundup_events r
+            MAX(
+              COALESCE(
+                t.posted_date,
+                t.authorized_date
+              )
+            ) AS observation_end
 
-          INNER JOIN transactions t
-            ON t.id =
-              r.transaction_id
+          FROM transactions t
 
           INNER JOIN accounts a
-            ON a.id =
-              t.account_id
+            ON a.id = t.account_id
 
           INNER JOIN plaid_items p
-            ON p.id =
-              a.plaid_item_id
+            ON p.id = a.plaid_item_id
 
-          WHERE r.user_id = $1
-            AND p.user_id = $1
+          WHERE p.user_id = $1
             AND p.status = 'active'
-            AND r.status = 'active'
-            AND r.eligible = true
             AND t.status = 'active'
-
-          GROUP BY
-            COALESCE(
-              NULLIF(
-                t.category,
-                ''
-              ),
-              'Uncategorized'
-            )
-
-          ORDER BY
-            roundup_opportunity DESC
-        `,
-        [userId]
-      );
-
-    const merchantResult =
-      await pool.query(
-        `
-          SELECT
-            COALESCE(
-              NULLIF(
-                t.merchant_name,
-                ''
-              ),
-              'Unknown merchant'
-            ) AS merchant,
-
-            COUNT(*)::int
-              AS purchase_count,
-
-            COALESCE(
-              SUM(
-                r.roundup_amount
-              ),
-              0
-            ) AS roundup_opportunity,
-
-            COALESCE(
-              AVG(
-                r.roundup_amount
-              ),
-              0
-            ) AS average_roundup
-
-          FROM roundup_events r
-
-          INNER JOIN transactions t
-            ON t.id =
-              r.transaction_id
-
-          INNER JOIN accounts a
-            ON a.id =
-              t.account_id
-
-          INNER JOIN plaid_items p
-            ON p.id =
-              a.plaid_item_id
-
-          WHERE r.user_id = $1
-            AND p.user_id = $1
-            AND p.status = 'active'
-            AND r.status = 'active'
-            AND r.eligible = true
-            AND t.status = 'active'
-
-          GROUP BY
-            COALESCE(
-              NULLIF(
-                t.merchant_name,
-                ''
-              ),
-              'Unknown merchant'
-            )
-
-          ORDER BY
-            roundup_opportunity DESC
-        `,
-        [userId]
-      );
-
-    /*
-     * Recent Round-Up events.
-     */
-
-    const recentResult =
-      await pool.query(
-        `
-          SELECT
-            r.id,
-            r.transaction_id,
-            r.roundup_amount,
-            r.transaction_amount,
-            r.eligibility_reason,
-            r.rule_version,
-
-            t.merchant_name,
-            t.category,
-            t.amount,
-            t.iso_currency_code,
-            t.pending,
-            t.authorized_date,
-            t.posted_date,
-
-            a.name AS account_name,
-            a.mask AS account_mask
-
-          FROM roundup_events r
-
-          INNER JOIN transactions t
-            ON t.id =
-              r.transaction_id
-
-          INNER JOIN accounts a
-            ON a.id =
-              t.account_id
-
-          INNER JOIN plaid_items p
-            ON p.id =
-              a.plaid_item_id
-
-          WHERE r.user_id = $1
-            AND p.user_id = $1
-            AND p.status = 'active'
-            AND r.status = 'active'
-            AND r.eligible = true
-            AND t.status = 'active'
-
-          ORDER BY
-            COALESCE(
-              t.posted_date,
-              t.authorized_date
-            ) DESC NULLS LAST,
-
-            t.created_at DESC
-
-          LIMIT 20
         `,
         [userId]
       );
 
     const roundup =
       intelligence.roundup;
+
+    const transactionState =
+      transactionStateResult.rows[0] || {
+        transaction_count: 0,
+        pending_transaction_count: 0,
+        posted_transaction_count: 0,
+        observation_start: null,
+        observation_end: null,
+      };
+
+    /*
+     * Preserve the existing dashboard contract while
+     * exposing the richer unified intelligence contract.
+     */
 
     return res.json({
       status: 'ok',
@@ -474,43 +222,36 @@ async function getDashboard(req, res) {
 
       observation: {
         earliest_transaction_date:
-          transactionState
-            .observation_start,
+          transactionState.observation_start,
 
         latest_transaction_date:
-          transactionState
-            .observation_end,
+          transactionState.observation_end,
       },
 
       data_state: {
         accounts_available:
-          accountsResult.rows
-            .length > 0,
+          accountsResult.rows.length >
+          0,
 
         transactions_available:
           Number(
-            transactionState
-              .transaction_count
+            transactionState.transaction_count
           ) > 0,
 
         roundup_available:
           Number(
-            roundup
-              .eligible_purchase_count
+            roundup.eligible_purchase_count
           ) > 0,
 
         income_available:
-          income &&
-          income.evidence_state ===
-            'supported',
+          intelligence.income
+            .evidence_state ===
+          'supported',
 
         cash_flow_available:
-          intelligence.cash_flow &&
-          (
-            intelligence.cash_flow
-              .evidence_state ===
-            'supported'
-          ),
+          intelligence.cash_flow
+            .evidence_state !==
+          'insufficient_evidence',
       },
 
       accounts:
@@ -519,77 +260,88 @@ async function getDashboard(req, res) {
       summary: {
         transaction_count:
           Number(
-            transactionState
-              .transaction_count
+            transactionState.transaction_count
           ),
 
         posted_transaction_count:
           Number(
-            transactionState
-              .posted_transaction_count
+            transactionState.posted_transaction_count
           ),
 
         pending_transaction_count:
           Number(
-            transactionState
-              .pending_transaction_count
+            transactionState.pending_transaction_count
           ),
 
         eligible_purchase_count:
           Number(
-            roundup
-              .eligible_purchase_count
+            roundup.eligible_purchase_count
           ),
 
         roundup_opportunity:
           roundup.opportunity,
 
-        average_roundup:
-          roundup.average,
+        total_cash:
+          intelligence.balance
+            .total_cash,
 
-        median_roundup:
-          roundup.median,
+        net_daily_change:
+          intelligence.cash_flow
+            .daily_net_change,
 
-        smallest_roundup:
-          roundup.smallest,
-
-        largest_roundup:
-          roundup.largest,
+        runway_days:
+          intelligence.balance
+            .runway_days,
       },
 
+      /*
+       * Existing Round-Up structures.
+       */
+
       categories:
-        categoryResult.rows,
+        roundup.category_concentration,
 
       merchants:
-        merchantResult.rows,
+        roundup.merchant_concentration,
 
       recent_roundups:
-        recentResult.rows,
+        roundup.recent,
+
+      /*
+       * Unified intelligence.
+       */
 
       intelligence,
 
-      income,
-
-      runway,
-
       /*
-       * Explicit evidence contract.
-       *
-       * This makes it possible for the frontend
-       * to distinguish facts from conclusions.
+       * Compatibility aliases.
        */
-
-      evidence: intelligence.evidence,
-
-      insights:
-        intelligence.insights,
 
       transaction_state:
         transactionState,
 
-      roundup: {
-        ...roundup,
-      },
+      roundup,
+
+      roundup_by_category:
+        roundup.category_concentration,
+
+      roundup_by_merchant:
+        roundup.merchant_concentration,
+
+      cash_flow:
+        intelligence.cash_flow,
+
+      income:
+        intelligence.income,
+
+      balance:
+        intelligence.balance,
+
+      behavior:
+        intelligence.behavior,
+
+      insights:
+        intelligence.insights,
     });
   } catch (err) {
     console.error(
@@ -613,17 +365,17 @@ async function getDashboard(req, res) {
 }
 
 
-async function getSummary(
-  req,
-  res
-) {
+/* ============================================================================
+ * SUMMARY
+ * ========================================================================== */
+
+async function getSummary(req, res) {
   try {
     const result =
       await pool.query(
         `
           SELECT
-            COUNT(*)::int
-              AS transaction_count,
+            COUNT(*)::int AS transaction_count,
 
             COALESCE(
               SUM(amount),
@@ -633,12 +385,10 @@ async function getSummary(
           FROM transactions t
 
           INNER JOIN accounts a
-            ON a.id =
-              t.account_id
+            ON a.id = t.account_id
 
           INNER JOIN plaid_items p
-            ON p.id =
-              a.plaid_item_id
+            ON p.id = a.plaid_item_id
 
           WHERE p.user_id = $1
             AND p.status = 'active'
@@ -649,6 +399,7 @@ async function getSummary(
 
     return res.json({
       status: 'ok',
+
       summary:
         result.rows[0],
     });
@@ -667,10 +418,11 @@ async function getSummary(
 }
 
 
-async function getAccounts(
-  req,
-  res
-) {
+/* ============================================================================
+ * ACCOUNTS
+ * ========================================================================== */
+
+async function getAccounts(req, res) {
   try {
     const result =
       await pool.query(
@@ -679,7 +431,6 @@ async function getAccounts(
             a.id,
             a.plaid_account_id,
             a.name,
-            a.official_name,
             a.mask,
             a.type,
             a.subtype,
@@ -693,20 +444,19 @@ async function getAccounts(
           FROM accounts a
 
           INNER JOIN plaid_items p
-            ON p.id =
-              a.plaid_item_id
+            ON p.id = a.plaid_item_id
 
           WHERE p.user_id = $1
             AND p.status = 'active'
 
-          ORDER BY
-            a.created_at ASC
+          ORDER BY a.created_at ASC
         `,
         [req.user.id]
       );
 
     return res.json({
       status: 'ok',
+
       accounts:
         result.rows,
     });
@@ -725,10 +475,11 @@ async function getAccounts(
 }
 
 
-async function getTransactions(
-  req,
-  res
-) {
+/* ============================================================================
+ * TRANSACTIONS
+ * ========================================================================== */
+
+async function getTransactions(req, res) {
   try {
     const result =
       await pool.query(
@@ -749,12 +500,10 @@ async function getTransactions(
           FROM transactions t
 
           INNER JOIN accounts a
-            ON a.id =
-              t.account_id
+            ON a.id = t.account_id
 
           INNER JOIN plaid_items p
-            ON p.id =
-              a.plaid_item_id
+            ON p.id = a.plaid_item_id
 
           WHERE p.user_id = $1
             AND p.status = 'active'
@@ -773,6 +522,7 @@ async function getTransactions(
 
     return res.json({
       status: 'ok',
+
       transactions:
         result.rows,
     });
@@ -791,77 +541,11 @@ async function getTransactions(
 }
 
 
-async function getRoundups(
-  req,
-  res
-) {
-  try {
-    const result =
-      await pool.query(
-        `
-          SELECT
-            r.*,
-            t.merchant_name,
-            t.category,
-            t.amount,
-            t.iso_currency_code,
-            t.pending,
-            t.authorized_date,
-            t.posted_date
+/* ============================================================================
+ * INSIGHTS
+ * ========================================================================== */
 
-          FROM roundup_events r
-
-          INNER JOIN transactions t
-            ON t.id =
-              r.transaction_id
-
-          INNER JOIN accounts a
-            ON a.id =
-              t.account_id
-
-          INNER JOIN plaid_items p
-            ON p.id =
-              a.plaid_item_id
-
-          WHERE r.user_id = $1
-            AND p.user_id = $1
-            AND p.status = 'active'
-            AND r.status = 'active'
-            AND t.status = 'active'
-
-          ORDER BY
-            COALESCE(
-              t.posted_date,
-              t.authorized_date
-            ) DESC NULLS LAST
-        `,
-        [req.user.id]
-      );
-
-    return res.json({
-      status: 'ok',
-      roundups:
-        result.rows,
-    });
-  } catch (err) {
-    console.error(
-      'Get roundups failed:',
-      err
-    );
-
-    return res.status(500).json({
-      status: 'error',
-      message:
-        'Unable to load your Round-Ups',
-    });
-  }
-}
-
-
-async function getInsights(
-  req,
-  res
-) {
+async function getInsights(req, res) {
   try {
     const intelligence =
       await getFinancialIntelligence(
@@ -892,10 +576,11 @@ async function getInsights(
 }
 
 
-async function getNetWorth(
-  req,
-  res
-) {
+/* ============================================================================
+ * NET WORTH / BALANCE COMPATIBILITY
+ * ========================================================================== */
+
+async function getNetWorth(req, res) {
   try {
     const result =
       await pool.query(
@@ -911,8 +596,7 @@ async function getNetWorth(
           FROM accounts a
 
           INNER JOIN plaid_items p
-            ON p.id =
-              a.plaid_item_id
+            ON p.id = a.plaid_item_id
 
           WHERE p.user_id = $1
             AND p.status = 'active'
@@ -922,6 +606,7 @@ async function getNetWorth(
 
     return res.json({
       status: 'ok',
+
       net_worth:
         result.rows[0]
           .net_worth,
@@ -941,19 +626,22 @@ async function getNetWorth(
 }
 
 
-async function getIncome(
-  req,
-  res
-) {
+/* ============================================================================
+ * INCOME
+ * ========================================================================== */
+
+async function getIncome(req, res) {
   try {
-    const income =
-      await computeIncomeSignals(
+    const intelligence =
+      await getFinancialIntelligence(
         req.user.id
       );
 
     return res.json({
       status: 'ok',
-      income,
+
+      income:
+        intelligence.income,
     });
   } catch (err) {
     console.error(
@@ -964,16 +652,17 @@ async function getIncome(
     return res.status(500).json({
       status: 'error',
       message:
-        'Unable to load your income intelligence',
+        'Unable to load your income',
     });
   }
 }
 
 
-async function getCashFlow(
-  req,
-  res
-) {
+/* ============================================================================
+ * CASH FLOW
+ * ========================================================================== */
+
+async function getCashFlow(req, res) {
   try {
     const intelligence =
       await getFinancialIntelligence(
@@ -986,7 +675,7 @@ async function getCashFlow(
       cash_flow:
         intelligence.cash_flow,
 
-      runway:
+      balance:
         intelligence.balance,
     });
   } catch (err) {
@@ -998,11 +687,15 @@ async function getCashFlow(
     return res.status(500).json({
       status: 'error',
       message:
-        'Unable to load your cash flow intelligence',
+        'Unable to load your cash flow',
     });
   }
 }
 
+
+/* ============================================================================
+ * EXPORTS
+ * ========================================================================== */
 
 module.exports = {
   getMe,
@@ -1010,7 +703,6 @@ module.exports = {
   getSummary,
   getAccounts,
   getTransactions,
-  getRoundups,
   getInsights,
   getNetWorth,
   getIncome,
