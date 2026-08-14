@@ -1,23 +1,50 @@
-const RENT_SIZED_THRESHOLD = 800;
-const RULE_VERSION = 'ROUNDUP_STANDARD_V1';
+const {
+  classifyTransaction,
+  CLASSIFICATIONS,
+} = require('./intelligence/classification');
 
-/**
- * Determine whether a transaction is eligible for Round-Up intelligence.
- *
- * Rules:
- * - Amount must be finite.
- * - Amount must be positive.
- * - Amount must be below $800.
- * - Transaction must have a non-zero next-dollar difference.
- */
-function getRoundupEligibility(amount) {
-  const numericAmount = Number(amount);
+const RENT_SIZED_THRESHOLD = 800;
+const RULE_VERSION = 'ROUNDUP_STANDARD_V2';
+
+function getRoundupEligibility(transactionOrAmount) {
+  /*
+   * Backward-compatible numeric handling.
+   * Financial intelligence should preferably pass the
+   * complete transaction so classification can occur first.
+   */
+  const transaction =
+    typeof transactionOrAmount === 'object'
+      ? transactionOrAmount
+      : {
+          amount: transactionOrAmount,
+        };
+
+  const numericAmount = Number(transaction.amount);
 
   if (!Number.isFinite(numericAmount)) {
     return {
       eligible: false,
       reason: 'INVALID_AMOUNT',
       ruleVersion: RULE_VERSION,
+      classification: CLASSIFICATIONS.UNKNOWN,
+    };
+  }
+
+  const classification =
+    classifyTransaction(transaction);
+
+  if (
+    classification.classification !==
+    CLASSIFICATIONS.PURCHASE
+  ) {
+    return {
+      eligible: false,
+      reason: `NOT_PURCHASE:${classification.classification}`,
+      ruleVersion: RULE_VERSION,
+      classification:
+        classification.classification,
+      economicRole:
+        classification.economic_role,
     };
   }
 
@@ -26,6 +53,8 @@ function getRoundupEligibility(amount) {
       eligible: false,
       reason: 'NON_POSITIVE_TRANSACTION',
       ruleVersion: RULE_VERSION,
+      classification:
+        classification.classification,
     };
   }
 
@@ -34,11 +63,14 @@ function getRoundupEligibility(amount) {
       eligible: false,
       reason: 'ABOVE_ROUNDUP_THRESHOLD',
       ruleVersion: RULE_VERSION,
+      classification:
+        classification.classification,
     };
   }
 
   const roundup = Number(
-    (Math.ceil(numericAmount) - numericAmount).toFixed(2)
+    (Math.ceil(numericAmount) - numericAmount)
+      .toFixed(2)
   );
 
   if (roundup <= 0) {
@@ -46,6 +78,8 @@ function getRoundupEligibility(amount) {
       eligible: false,
       reason: 'ALREADY_WHOLE_DOLLAR',
       ruleVersion: RULE_VERSION,
+      classification:
+        classification.classification,
     };
   }
 
@@ -54,6 +88,8 @@ function getRoundupEligibility(amount) {
       eligible: false,
       reason: 'INVALID_ROUNDUP_AMOUNT',
       ruleVersion: RULE_VERSION,
+      classification:
+        classification.classification,
     };
   }
 
@@ -61,24 +97,34 @@ function getRoundupEligibility(amount) {
     eligible: true,
     reason: 'ELIGIBLE_PURCHASE',
     ruleVersion: RULE_VERSION,
+    classification:
+      classification.classification,
+    economicRole:
+      classification.economic_role,
   };
 }
 
-/**
- * Calculate the exact Round-Up amount.
- *
- * Returns 0 when the transaction is not eligible.
- */
-function calculateRoundup(amount) {
-  const numericAmount = Number(amount);
-  const eligibility = getRoundupEligibility(numericAmount);
+function calculateRoundup(transactionOrAmount) {
+  const transaction =
+    typeof transactionOrAmount === 'object'
+      ? transactionOrAmount
+      : {
+          amount: transactionOrAmount,
+        };
+
+  const eligibility =
+    getRoundupEligibility(transaction);
 
   if (!eligibility.eligible) {
     return 0;
   }
 
+  const numericAmount =
+    Number(transaction.amount);
+
   return Number(
-    (Math.ceil(numericAmount) - numericAmount).toFixed(2)
+    (Math.ceil(numericAmount) - numericAmount)
+      .toFixed(2)
   );
 }
 
