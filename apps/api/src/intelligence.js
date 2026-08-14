@@ -1,42 +1,55 @@
 const pool = require('./db');
-const {
-  computeIncomeSignals,
-} = require('./income');
 
 /*
+ * ============================================================================
  * iBag Financial Intelligence Engine
- *
- * ARCHITECTURE B
- * ---------------
- *
- * intelligence.js is the SINGLE CANONICAL INTELLIGENCE AUTHORITY.
- *
- * Specialized analytical modules may exist beneath it.
- *
- * income.js
- *   -> recurring-income detection
- *
- * intelligence.js
- *   -> orchestrates specialized analysis
- *   -> owns canonical intelligence contract
- *   -> owns evidence/confidence semantics
- *   -> owns cross-domain financial interpretation
+ * ============================================================================
  *
  * PHASE 1 CONTRACT
  * ----------------
- * - Read-only
+ * - Read-only intelligence
  * - Real authorized financial data only
  * - No money movement
  * - No fake/mock/seeded financial data
  * - No fabricated conclusions
- * - Evidence-gated
- * - Every inference is qualified
+ * - Evidence-gated analysis
+ *
+ * AUTHORITY
+ * ---------
+ * This file is the authoritative financial-intelligence engine.
+ *
+ * Other modules must NOT independently calculate competing versions of:
+ *
+ * - income
+ * - cash flow
+ * - runway
+ * - spending behavior
+ * - roundup intelligence
+ *
+ * They may consume this engine through compatibility wrappers.
+ *
+ * EVIDENCE STATES
+ * --------------
+ * observed
+ *     Directly present in authorized records.
+ *
+ * calculated
+ *     Deterministically derived from observed records.
+ *
+ * inferred
+ *     A pattern supported by sufficient evidence.
+ *
+ * limited
+ *     Some evidence exists, but not enough for strong confidence.
+ *
+ * insufficient_evidence
+ *     Not enough evidence to responsibly calculate the requested signal.
  */
 
 
-/* -------------------------------------------------------------------------- */
-/* NUMERIC HELPERS                                                            */
-/* -------------------------------------------------------------------------- */
+/* ============================================================================
+ * NUMERIC HELPERS
+ * ========================================================================== */
 
 function numberValue(value) {
   const parsed = Number(value);
@@ -46,13 +59,19 @@ function numberValue(value) {
     : 0;
 }
 
+
 function nullableNumber(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
   const parsed = Number(value);
 
   return Number.isFinite(parsed)
     ? parsed
     : null;
 }
+
 
 function round(value, decimals = 2) {
   if (value === null || value === undefined) {
@@ -67,97 +86,102 @@ function round(value, decimals = 2) {
 
   const factor = Math.pow(10, decimals);
 
-  return (
-    Math.round(
-      (numeric + Number.EPSILON) *
-        factor
-    ) / factor
-  );
+  return Math.round(
+    (numeric + Number.EPSILON) * factor
+  ) / factor;
 }
 
-function median(values) {
-  if (!values.length) {
-    return null;
-  }
 
-  const sorted = [...values]
+function median(values) {
+  const valid = values
     .filter(Number.isFinite)
     .sort((a, b) => a - b);
 
-  if (!sorted.length) {
+  if (!valid.length) {
     return null;
   }
 
   const middle =
-    Math.floor(sorted.length / 2);
+    Math.floor(valid.length / 2);
 
-  if (sorted.length % 2 === 0) {
+  if (valid.length % 2 === 0) {
     return (
-      sorted[middle - 1] +
-      sorted[middle]
+      valid[middle - 1] +
+      valid[middle]
     ) / 2;
   }
 
-  return sorted[middle];
+  return valid[middle];
 }
 
+
 function mean(values) {
-  if (!values.length) {
+  const valid = values.filter(
+    Number.isFinite
+  );
+
+  if (!valid.length) {
     return null;
   }
 
   return (
-    values.reduce(
-      (sum, value) =>
-        sum + value,
+    valid.reduce(
+      (sum, value) => sum + value,
       0
-    ) / values.length
+    ) / valid.length
   );
 }
 
+
 function standardDeviation(values) {
-  if (values.length < 2) {
+  const valid = values.filter(
+    Number.isFinite
+  );
+
+  if (valid.length < 2) {
     return 0;
   }
 
-  const avg = mean(values);
+  const average = mean(valid);
 
-  if (avg === null) {
+  if (average === null) {
     return 0;
   }
 
   const variance =
-    values.reduce(
+    valid.reduce(
       (sum, value) =>
         sum +
         Math.pow(
-          value - avg,
+          value - average,
           2
         ),
       0
-    ) / values.length;
+    ) / valid.length;
 
   return Math.sqrt(variance);
 }
 
-function daysBetween(a, b) {
-  if (!a || !b) {
+
+function daysBetween(first, second) {
+  if (!first || !second) {
     return null;
   }
 
-  const first = new Date(a);
-  const second = new Date(b);
+  const a = new Date(first);
+  const b = new Date(second);
 
-  const diff =
-    second.getTime() -
-    first.getTime();
+  const difference =
+    b.getTime() -
+    a.getTime();
 
-  if (!Number.isFinite(diff)) {
+  if (!Number.isFinite(difference)) {
     return null;
   }
 
-  return diff / 86400000;
+  return difference / 86400000;
 }
+
 
 function dateOnly(value) {
   if (!value) {
@@ -170,13 +194,15 @@ function dateOnly(value) {
     return null;
   }
 
-  return date.toISOString().slice(0, 10);
+  return date
+    .toISOString()
+    .slice(0, 10);
 }
 
 
-/* -------------------------------------------------------------------------- */
-/* TRANSACTION LOAD                                                           */
-/* -------------------------------------------------------------------------- */
+/* ============================================================================
+ * TRANSACTION LOAD
+ * ========================================================================== */
 
 async function loadTransactions(userId) {
   const result = await pool.query(
@@ -229,9 +255,9 @@ async function loadTransactions(userId) {
 }
 
 
-/* -------------------------------------------------------------------------- */
-/* ACCOUNT LOAD                                                               */
-/* -------------------------------------------------------------------------- */
+/* ============================================================================
+ * ACCOUNT LOAD
+ * ========================================================================== */
 
 async function loadAccounts(userId) {
   const result = await pool.query(
@@ -266,13 +292,11 @@ async function loadAccounts(userId) {
 }
 
 
-/* -------------------------------------------------------------------------- */
-/* ROUND-UP INTELLIGENCE                                                      */
-/* -------------------------------------------------------------------------- */
+/* ============================================================================
+ * ROUND-UP INTELLIGENCE
+ * ========================================================================== */
 
-async function computeRoundupIntelligence(
-  userId
-) {
+async function computeRoundupIntelligence(userId) {
   const result = await pool.query(
     `
       SELECT
@@ -330,7 +354,33 @@ async function computeRoundupIntelligence(
       evidence_state:
         'insufficient_evidence',
 
-      confidence: 0,
+      eligible_purchase_count: 0,
+
+      opportunity: 0,
+      average: 0,
+      median: 0,
+      smallest: 0,
+      largest: 0,
+
+      category_concentration: [],
+      merchant_concentration: [],
+
+      recent: [],
+    };
+  }
+
+  const values = rows
+    .map(row =>
+      numberValue(
+        row.roundup_amount
+      )
+    )
+    .filter(value => value >= 0);
+
+  if (!values.length) {
+    return {
+      evidence_state:
+        'insufficient_evidence',
 
       eligible_purchase_count: 0,
 
@@ -347,13 +397,6 @@ async function computeRoundupIntelligence(
     };
   }
 
-  const values = rows.map(
-    row =>
-      numberValue(
-        row.roundup_amount
-      )
-  );
-
   const opportunity =
     values.reduce(
       (sum, value) =>
@@ -368,14 +411,19 @@ async function computeRoundupIntelligence(
     const category =
       row.category &&
       row.category.trim()
-        ? row.category
+        ? row.category.trim()
         : 'Uncategorized';
 
     const merchant =
       row.merchant_name &&
       row.merchant_name.trim()
-        ? row.merchant_name
+        ? row.merchant_name.trim()
         : 'Unknown merchant';
+
+    const roundupAmount =
+      numberValue(
+        row.roundup_amount
+      );
 
     if (!categories[category]) {
       categories[category] = {
@@ -386,11 +434,8 @@ async function computeRoundupIntelligence(
     }
 
     categories[category].purchases += 1;
-
     categories[category].opportunity +=
-      numberValue(
-        row.roundup_amount
-      );
+      roundupAmount;
 
     if (!merchants[merchant]) {
       merchants[merchant] = {
@@ -401,22 +446,17 @@ async function computeRoundupIntelligence(
     }
 
     merchants[merchant].purchases += 1;
-
     merchants[merchant].opportunity +=
-      numberValue(
-        row.roundup_amount
-      );
+      roundupAmount;
   }
 
   const categoryConcentration =
     Object.values(categories)
       .map(item => ({
-        ...item,
-
+        name: item.name,
+        purchases: item.purchases,
         opportunity:
-          round(
-            item.opportunity
-          ),
+          round(item.opportunity),
 
         share:
           opportunity > 0
@@ -436,12 +476,10 @@ async function computeRoundupIntelligence(
   const merchantConcentration =
     Object.values(merchants)
       .map(item => ({
-        ...item,
-
+        name: item.name,
+        purchases: item.purchases,
         opportunity:
-          round(
-            item.opportunity
-          ),
+          round(item.opportunity),
 
         share:
           opportunity > 0
@@ -458,20 +496,9 @@ async function computeRoundupIntelligence(
           a.opportunity
       );
 
-  const confidence =
-    rows.length >= 20
-      ? 1
-      : rows.length >= 10
-      ? 0.9
-      : rows.length >= 5
-      ? 0.8
-      : 0.65;
-
   return {
     evidence_state:
       'supported',
-
-    confidence,
 
     eligible_purchase_count:
       rows.length,
@@ -503,22 +530,463 @@ async function computeRoundupIntelligence(
 }
 
 
-/* -------------------------------------------------------------------------- */
-/* CASH-FLOW INTELLIGENCE                                                     */
-/* -------------------------------------------------------------------------- */
+/* ============================================================================
+ * INCOME INTELLIGENCE
+ * ========================================================================== */
 
-async function computeCashFlowIntelligence(
-  userId,
-  transactions = null
+function classifyIncomeCadence(
+  medianGapDays
 ) {
-  const rows =
-    transactions ||
-    await loadTransactions(userId);
+  if (
+    medianGapDays >= 5 &&
+    medianGapDays <= 9
+  ) {
+    return 'weekly';
+  }
 
-  const dated =
-    rows.filter(
+  if (
+    medianGapDays >= 12 &&
+    medianGapDays <= 17
+  ) {
+    return 'biweekly';
+  }
+
+  if (
+    medianGapDays >= 27 &&
+    medianGapDays <= 33
+  ) {
+    return 'monthly';
+  }
+
+  return 'irregular';
+}
+
+
+function confidenceFromIncomeEvidence({
+  occurrences,
+  reliability,
+  cadence,
+}) {
+  if (
+    cadence === 'irregular' ||
+    occurrences < 3
+  ) {
+    return 'insufficient';
+  }
+
+  if (
+    occurrences >= 6 &&
+    reliability >= 0.75
+  ) {
+    return 'high';
+  }
+
+  if (
+    occurrences >= 4 &&
+    reliability >= 0.5
+  ) {
+    return 'medium';
+  }
+
+  return 'low';
+}
+
+
+function buildIncomeCandidates(
+  transactions
+) {
+  /*
+   * Negative transaction amounts represent
+   * money entering the account under iBag's
+   * established transaction convention.
+   */
+
+  const incomeTransactions =
+    transactions.filter(
       transaction =>
-        !transaction.pending &&
+        transaction.pending === false &&
+        transaction.posted_date &&
+        numberValue(
+          transaction.amount
+        ) < 0
+    );
+
+  const groups = {};
+
+  for (const transaction of incomeTransactions) {
+    const amount =
+      Math.abs(
+        numberValue(
+          transaction.amount
+        )
+      );
+
+    if (amount <= 0) {
+      continue;
+    }
+
+    const merchant =
+      transaction.merchant_name &&
+      transaction.merchant_name.trim()
+        ? transaction.merchant_name.trim()
+        : null;
+
+    /*
+     * Merchant is preferred.
+     *
+     * If merchant information is absent,
+     * group by rounded amount as a weaker
+     * candidate signal.
+     */
+
+    const key =
+      merchant ||
+      `amount:${Math.round(amount)}`;
+
+    if (!groups[key]) {
+      groups[key] = {
+        label: merchant,
+        amount_based: !merchant,
+        transactions: [],
+      };
+    }
+
+    groups[key].transactions.push(
+      transaction
+    );
+  }
+
+  const candidates = [];
+
+  for (const group of Object.values(groups)) {
+    const groupTransactions =
+      group.transactions;
+
+    if (groupTransactions.length < 3) {
+      continue;
+    }
+
+    const dates =
+      groupTransactions
+        .map(transaction =>
+          new Date(
+            transaction.posted_date
+          ).getTime()
+        )
+        .filter(Number.isFinite);
+
+    if (dates.length < 3) {
+      continue;
+    }
+
+    const gaps = [];
+
+    for (
+      let index = 1;
+      index < dates.length;
+      index += 1
+    ) {
+      const gap =
+        (
+          dates[index] -
+          dates[index - 1]
+        ) / 86400000;
+
+      if (
+        Number.isFinite(gap) &&
+        gap > 0
+      ) {
+        gaps.push(gap);
+      }
+    }
+
+    if (gaps.length < 2) {
+      continue;
+    }
+
+    const medianGap =
+      median(gaps);
+
+    const averageGap =
+      mean(gaps);
+
+    const gapStddev =
+      standardDeviation(gaps);
+
+    const reliability =
+      averageGap > 0
+        ? Math.max(
+            0,
+            Math.min(
+              1,
+              1 -
+                gapStddev /
+                  averageGap
+            )
+          )
+        : 0;
+
+    const cadence =
+      classifyIncomeCadence(
+        medianGap
+      );
+
+    if (cadence === 'irregular') {
+      continue;
+    }
+
+    const amounts =
+      groupTransactions.map(
+        transaction =>
+          Math.abs(
+            numberValue(
+              transaction.amount
+            )
+          )
+      );
+
+    const typicalAmount =
+      median(amounts);
+
+    const amountMean =
+      mean(amounts);
+
+    const amountStddev =
+      standardDeviation(
+        amounts
+      );
+
+    const amountConsistency =
+      amountMean > 0
+        ? Math.max(
+            0,
+            Math.min(
+              1,
+              1 -
+                amountStddev /
+                  amountMean
+            )
+          )
+        : 0;
+
+    const recurrenceScore =
+      Math.min(
+        1,
+        groupTransactions.length /
+          8
+      );
+
+    /*
+     * Merchant identified = stronger source
+     * evidence than amount-only grouping.
+     */
+
+    const sourceScore =
+      group.amount_based
+        ? 0.5
+        : 1;
+
+    const score =
+      recurrenceScore * 0.35 +
+      reliability * 0.35 +
+      amountConsistency * 0.20 +
+      sourceScore * 0.10;
+
+    const confidence =
+      confidenceFromIncomeEvidence({
+        occurrences:
+          groupTransactions.length,
+        reliability,
+        cadence,
+      });
+
+    const lastDate =
+      new Date(
+        dates[dates.length - 1]
+      );
+
+    const nextExpectedDate =
+      medianGap !== null
+        ? new Date(
+            lastDate.getTime() +
+              medianGap *
+                86400000
+          )
+        : null;
+
+    candidates.push({
+      sourceLabel:
+        group.label,
+
+      grouping:
+        group.amount_based
+          ? 'amount'
+          : 'merchant',
+
+      cadence,
+
+      typicalAmount,
+
+      reliability,
+
+      amountConsistency,
+
+      occurrences:
+        groupTransactions.length,
+
+      lastDetectedDate:
+        lastDate,
+
+      nextExpectedDate,
+
+      confidence,
+
+      score,
+    });
+  }
+
+  return candidates.sort(
+    (a, b) =>
+      b.score -
+      a.score
+  );
+}
+
+
+function computeIncomeIntelligence(
+  transactions
+) {
+  const candidates =
+    buildIncomeCandidates(
+      transactions
+    );
+
+  if (!candidates.length) {
+    return {
+      evidence_state:
+        'insufficient_evidence',
+
+      signal: null,
+
+      candidates: [],
+    };
+  }
+
+  const best =
+    candidates[0];
+
+  return {
+    evidence_state:
+      best.confidence ===
+        'insufficient'
+        ? 'insufficient_evidence'
+        : 'supported',
+
+    signal: {
+      source:
+        best.sourceLabel,
+
+      grouping:
+        best.grouping,
+
+      cadence:
+        best.cadence,
+
+      typical_amount:
+        round(
+          best.typicalAmount
+        ),
+
+      occurrences:
+        best.occurrences,
+
+      reliability:
+        round(
+          best.reliability,
+          2
+        ),
+
+      amount_consistency:
+        round(
+          best.amountConsistency,
+          2
+        ),
+
+      confidence:
+        best.confidence,
+
+      last_detected_date:
+        dateOnly(
+          best.lastDetectedDate
+        ),
+
+      next_expected_date:
+        dateOnly(
+          best.nextExpectedDate
+        ),
+    },
+
+    candidates:
+      candidates.map(
+        candidate => ({
+          source:
+            candidate.sourceLabel,
+
+          grouping:
+            candidate.grouping,
+
+          cadence:
+            candidate.cadence,
+
+          typical_amount:
+            round(
+              candidate.typicalAmount
+            ),
+
+          occurrences:
+            candidate.occurrences,
+
+          reliability:
+            round(
+              candidate.reliability,
+              2
+            ),
+
+          amount_consistency:
+            round(
+              candidate.amountConsistency,
+              2
+            ),
+
+          confidence:
+            candidate.confidence,
+
+          last_detected_date:
+            dateOnly(
+              candidate.lastDetectedDate
+            ),
+
+          next_expected_date:
+            dateOnly(
+              candidate.nextExpectedDate
+            ),
+        })
+      ),
+  };
+}
+
+
+/* ============================================================================
+ * CASH-FLOW INTELLIGENCE
+ * ========================================================================== */
+
+function computeCashFlowIntelligence(
+  transactions
+) {
+  const dated =
+    transactions.filter(
+      transaction =>
+        transaction.pending === false &&
         transaction.posted_date
     );
 
@@ -527,12 +995,15 @@ async function computeCashFlowIntelligence(
       evidence_state:
         'insufficient_evidence',
 
-      confidence: 0,
-
       observation_days: 0,
 
-      inflow: null,
-      outflow: null,
+      earliest_date: null,
+      latest_date: null,
+
+      transaction_count: 0,
+
+      inflow: 0,
+      outflow: 0,
       net_change: null,
 
       daily_inflow: null,
@@ -543,14 +1014,16 @@ async function computeCashFlowIntelligence(
     };
   }
 
-  const dates = dated
-    .map(
-      row =>
-        row.posted_date
-    )
-    .sort();
+  const dates =
+    dated
+      .map(
+        transaction =>
+          transaction.posted_date
+      )
+      .sort();
 
-  const earliest = dates[0];
+  const earliest =
+    dates[0];
 
   const latest =
     dates[dates.length - 1];
@@ -569,18 +1042,18 @@ async function computeCashFlowIntelligence(
   let inflow = 0;
   let outflow = 0;
 
+  /*
+   * iBag transaction convention:
+   *
+   * Positive = money leaving account
+   * Negative = money entering account
+   */
+
   for (const transaction of dated) {
     const amount =
       numberValue(
         transaction.amount
       );
-
-    /*
-     * Plaid convention used by iBag:
-     *
-     * positive amount = money leaving account
-     * negative amount = money entering account
-     */
 
     if (amount > 0) {
       outflow += amount;
@@ -599,7 +1072,8 @@ async function computeCashFlowIntelligence(
     outflow / observationDays;
 
   const dailyNet =
-    netChange / observationDays;
+    netChange /
+    observationDays;
 
   let direction = 'stable';
 
@@ -609,24 +1083,11 @@ async function computeCashFlowIntelligence(
     direction = 'negative';
   }
 
-  const confidence =
-    observationDays >= 90 &&
-    dated.length >= 30
-      ? 1
-      : observationDays >= 30 &&
-        dated.length >= 10
-      ? 0.85
-      : dated.length >= 3
-      ? 0.65
-      : 0.4;
-
   return {
     evidence_state:
       dated.length >= 3
         ? 'supported'
         : 'limited',
-
-    confidence,
 
     observation_days:
       observationDays,
@@ -663,12 +1124,11 @@ async function computeCashFlowIntelligence(
 }
 
 
-/* -------------------------------------------------------------------------- */
-/* BALANCE / RUNWAY INTELLIGENCE                                              */
-/* -------------------------------------------------------------------------- */
+/* ============================================================================
+ * BALANCE / RUNWAY INTELLIGENCE
+ * ========================================================================== */
 
-async function computeBalanceIntelligence(
-  userId,
+function computeBalanceIntelligence(
   accounts,
   cashFlow
 ) {
@@ -684,14 +1144,15 @@ async function computeBalanceIntelligence(
       evidence_state:
         'insufficient_evidence',
 
-      confidence: 0,
-
       total_cash: null,
 
       runway_days: null,
       runway_months: null,
 
-      status: 'unavailable',
+      daily_burn: null,
+
+      status:
+        'unavailable',
     };
   }
 
@@ -705,18 +1166,19 @@ async function computeBalanceIntelligence(
       0
     );
 
+  /*
+   * A non-negative daily net change does
+   * not support a finite depletion runway.
+   */
+
   if (
     cashFlow.daily_net_change ===
       null ||
-    cashFlow.daily_net_change >=
-      0
+    cashFlow.daily_net_change >= 0
   ) {
     return {
       evidence_state:
         cashFlow.evidence_state,
-
-      confidence:
-        cashFlow.confidence || 0,
 
       total_cash:
         round(totalCash),
@@ -724,9 +1186,11 @@ async function computeBalanceIntelligence(
       runway_days: null,
       runway_months: null,
 
+      daily_burn: null,
+
       status:
         cashFlow.daily_net_change ===
-        null
+          null
           ? 'insufficient_data'
           : 'stable_or_growing',
     };
@@ -742,13 +1206,13 @@ async function computeBalanceIntelligence(
       evidence_state:
         'insufficient_evidence',
 
-      confidence: 0,
-
       total_cash:
         round(totalCash),
 
       runway_days: null,
       runway_months: null,
+
+      daily_burn: null,
 
       status:
         'insufficient_data',
@@ -759,16 +1223,14 @@ async function computeBalanceIntelligence(
     Math.max(
       0,
       Math.round(
-        totalCash / dailyBurn
+        totalCash /
+          dailyBurn
       )
     );
 
   return {
     evidence_state:
       cashFlow.evidence_state,
-
-    confidence:
-      cashFlow.confidence || 0,
 
     total_cash:
       round(totalCash),
@@ -778,7 +1240,8 @@ async function computeBalanceIntelligence(
 
     runway_months:
       round(
-        runwayDays / 30.4375,
+        runwayDays /
+          30.4375,
         1
       ),
 
@@ -791,9 +1254,9 @@ async function computeBalanceIntelligence(
 }
 
 
-/* -------------------------------------------------------------------------- */
-/* BEHAVIORAL / SPENDING INTELLIGENCE                                        */
-/* -------------------------------------------------------------------------- */
+/* ============================================================================
+ * BEHAVIORAL / SPENDING INTELLIGENCE
+ * ========================================================================== */
 
 function computeBehavioralIntelligence(
   transactions
@@ -801,7 +1264,7 @@ function computeBehavioralIntelligence(
   const posted =
     transactions.filter(
       transaction =>
-        !transaction.pending &&
+        transaction.pending === false &&
         transaction.posted_date
     );
 
@@ -810,7 +1273,9 @@ function computeBehavioralIntelligence(
       evidence_state:
         'insufficient_evidence',
 
-      confidence: 0,
+      posted_transaction_count: 0,
+
+      total_observed_spend: 0,
 
       top_categories: [],
       top_merchants: [],
@@ -826,6 +1291,10 @@ function computeBehavioralIntelligence(
         transaction.amount
       );
 
+    /*
+     * Positive = spending/outflow.
+     */
+
     if (amount <= 0) {
       continue;
     }
@@ -833,13 +1302,13 @@ function computeBehavioralIntelligence(
     const category =
       transaction.category &&
       transaction.category.trim()
-        ? transaction.category
+        ? transaction.category.trim()
         : 'Uncategorized';
 
     const merchant =
       transaction.merchant_name &&
       transaction.merchant_name.trim()
-        ? transaction.merchant_name
+        ? transaction.merchant_name.trim()
         : 'Unknown merchant';
 
     if (!categories[category]) {
@@ -850,11 +1319,8 @@ function computeBehavioralIntelligence(
       };
     }
 
-    categories[category].transactions +=
-      1;
-
-    categories[category].spend +=
-      amount;
+    categories[category].transactions += 1;
+    categories[category].spend += amount;
 
     if (!merchants[merchant]) {
       merchants[merchant] = {
@@ -864,11 +1330,8 @@ function computeBehavioralIntelligence(
       };
     }
 
-    merchants[merchant].transactions +=
-      1;
-
-    merchants[merchant].spend +=
-      amount;
+    merchants[merchant].transactions += 1;
+    merchants[merchant].spend += amount;
   }
 
   const totalSpend =
@@ -933,24 +1396,11 @@ function computeBehavioralIntelligence(
       )
       .slice(0, 10);
 
-  const confidence =
-    posted.length >= 100
-      ? 1
-      : posted.length >= 50
-      ? 0.9
-      : posted.length >= 20
-      ? 0.8
-      : posted.length >= 5
-      ? 0.65
-      : 0.4;
-
   return {
     evidence_state:
       posted.length >= 5
         ? 'supported'
         : 'limited',
-
-    confidence,
 
     posted_transaction_count:
       posted.length,
@@ -967,119 +1417,9 @@ function computeBehavioralIntelligence(
 }
 
 
-/* -------------------------------------------------------------------------- */
-/* INCOME INTELLIGENCE                                                        */
-/* -------------------------------------------------------------------------- */
-
-/*
- * Architecture B:
- *
- * income.js remains the specialized analyzer.
- *
- * intelligence.js owns:
- * - whether the result is exposed
- * - evidence state
- * - confidence
- * - canonical response shape
- *
- * income.js does NOT become a second dashboard authority.
- */
-
-async function computeIncomeIntelligence(
-  userId
-) {
-  const signal =
-    await computeIncomeSignals(
-      userId
-    );
-
-  if (!signal) {
-    return {
-      evidence_state:
-        'insufficient_evidence',
-
-      confidence: 0,
-
-      result: null,
-
-      evidence: {
-        source: 'income.js',
-        reason:
-          'No sufficiently supported recurring income pattern was identified.',
-      },
-    };
-  }
-
-  const confidence =
-    Number.isFinite(
-      Number(
-        signal.reliability
-      )
-    )
-      ? Math.max(
-          0,
-          Math.min(
-            1,
-            Number(
-              signal.reliability
-            )
-          )
-        )
-      : 0;
-
-  return {
-    evidence_state:
-      confidence >= 0.7
-        ? 'supported'
-        : 'limited',
-
-    confidence,
-
-    result: {
-      source_label:
-        signal.sourceLabel,
-
-      cadence:
-        signal.cadence,
-
-      average_amount:
-        round(
-          signal.avgAmount
-        ),
-
-      occurrences:
-        signal.occurrences,
-
-      last_detected_date:
-        dateOnly(
-          signal.lastDate
-        ),
-
-      next_expected_date:
-        dateOnly(
-          signal.nextExpectedDate
-        ),
-    },
-
-    evidence: {
-      source: 'income.js',
-
-      occurrence_count:
-        signal.occurrences,
-
-      reliability:
-        confidence,
-
-      cadence:
-        signal.cadence,
-    },
-  };
-}
-
-
-/* -------------------------------------------------------------------------- */
-/* CANONICAL FINANCIAL INTELLIGENCE                                          */
-/* -------------------------------------------------------------------------- */
+/* ============================================================================
+ * FINANCIAL INTELLIGENCE SUMMARY
+ * ========================================================================== */
 
 async function computeFinancialIntelligence(
   userId
@@ -1088,27 +1428,24 @@ async function computeFinancialIntelligence(
     accounts,
     transactions,
     roundup,
-    income,
   ] = await Promise.all([
     loadAccounts(userId),
     loadTransactions(userId),
-    computeRoundupIntelligence(
-      userId
-    ),
-    computeIncomeIntelligence(
-      userId
-    ),
+    computeRoundupIntelligence(userId),
   ]);
 
+  const income =
+    computeIncomeIntelligence(
+      transactions
+    );
+
   const cashFlow =
-    await computeCashFlowIntelligence(
-      userId,
+    computeCashFlowIntelligence(
       transactions
     );
 
   const balance =
-    await computeBalanceIntelligence(
-      userId,
+    computeBalanceIntelligence(
       accounts,
       cashFlow
     );
@@ -1143,11 +1480,11 @@ async function computeFinancialIntelligence(
           ? 'observed'
           : 'insufficient',
 
-      income:
-        income.evidence_state,
-
       roundup:
         roundup.evidence_state,
+
+      income:
+        income.evidence_state,
 
       cash_flow:
         cashFlow.evidence_state,
@@ -1192,15 +1529,12 @@ async function computeFinancialIntelligence(
         ).length,
     },
 
-    /*
-     * CANONICAL INTELLIGENCE DOMAINS
-     */
+    roundup,
 
     income,
 
-    roundup,
-
-    cash_flow: cashFlow,
+    cash_flow:
+      cashFlow,
 
     balance,
 
@@ -1209,59 +1543,29 @@ async function computeFinancialIntelligence(
 }
 
 
-/* -------------------------------------------------------------------------- */
-/* EXPLAINABLE INSIGHTS                                                       */
-/* -------------------------------------------------------------------------- */
+/* ============================================================================
+ * EXPLAINABLE INSIGHTS
+ * ========================================================================== */
 
 function buildExplainableInsights(
   intelligence
 ) {
   const insights = [];
 
-  const income =
-    intelligence.income;
-
-  if (
-    income &&
-    income.evidence_state ===
-      'supported' &&
-    income.result
-  ) {
-    insights.push({
-      id:
-        'recurring_income_pattern',
-
-      type:
-        'income',
-
-      evidence_type:
-        'inferred',
-
-      confidence:
-        income.confidence,
-
-      title:
-        'Recurring income pattern observed',
-
-      statement:
-        `iBag identified a ${income.result.cadence} recurring income pattern from ${income.result.occurrences} observed deposits.`,
-
-      evidence:
-        income.evidence,
-
-      qualification:
-        'This is a pattern inference from observed transaction history, not a guarantee of future income.',
-    });
-  }
+  /*
+   * --------------------------------------------------------------------------
+   * ROUND-UP
+   * --------------------------------------------------------------------------
+   */
 
   const roundup =
     intelligence.roundup;
 
   if (
+    roundup &&
     roundup.evidence_state ===
       'supported' &&
-    roundup.eligible_purchase_count >
-      0
+    roundup.eligible_purchase_count > 0
   ) {
     insights.push({
       id:
@@ -1274,7 +1578,7 @@ function buildExplainableInsights(
         'calculated',
 
       confidence:
-        roundup.confidence,
+        'high',
 
       title:
         'Round-Up opportunity detected',
@@ -1295,36 +1599,112 @@ function buildExplainableInsights(
         median:
           roundup.median,
       },
-
-      qualification:
-        'Round-Up opportunity is an analytical value. No money has been moved or saved.',
     });
   }
+
+
+  /*
+   * --------------------------------------------------------------------------
+   * INCOME
+   * --------------------------------------------------------------------------
+   */
+
+  const income =
+    intelligence.income;
+
+  if (
+    income &&
+    income.evidence_state ===
+      'supported' &&
+    income.signal
+  ) {
+    const signal =
+      income.signal;
+
+    insights.push({
+      id:
+        'recurring_income_signal',
+
+      type:
+        'income',
+
+      evidence_type:
+        'inferred',
+
+      confidence:
+        signal.confidence,
+
+      title:
+        'Recurring income pattern detected',
+
+      statement:
+        `A ${signal.cadence} incoming-money pattern was observed${signal.source ? ` from ${signal.source}` : ''}, with a typical amount of ${signal.typical_amount.toFixed(2)}.`,
+
+      evidence: {
+        source:
+          signal.source,
+
+        cadence:
+          signal.cadence,
+
+        typical_amount:
+          signal.typical_amount,
+
+        occurrences:
+          signal.occurrences,
+
+        reliability:
+          signal.reliability,
+
+        amount_consistency:
+          signal.amount_consistency,
+
+        last_detected_date:
+          signal.last_detected_date,
+
+        next_expected_date:
+          signal.next_expected_date,
+      },
+
+      qualification:
+        'This is a transaction-pattern inference and is not a guarantee of future income.',
+    });
+  }
+
+
+  /*
+   * --------------------------------------------------------------------------
+   * CASH FLOW
+   * --------------------------------------------------------------------------
+   */
 
   const cashFlow =
     intelligence.cash_flow;
 
   if (
+    cashFlow &&
     cashFlow.evidence_state ===
-      'supported'
+      'supported' &&
+    cashFlow.direction !==
+      'unknown'
   ) {
-    let direction;
+    let directionText =
+      'inflows and outflows were broadly balanced';
 
     if (
       cashFlow.direction ===
       'positive'
     ) {
-      direction =
+      directionText =
         'inflows exceeded outflows';
-    } else if (
+    }
+
+    if (
       cashFlow.direction ===
       'negative'
     ) {
-      direction =
+      directionText =
         'outflows exceeded inflows';
-    } else {
-      direction =
-        'inflows and outflows were broadly balanced';
     }
 
     insights.push({
@@ -1338,13 +1718,13 @@ function buildExplainableInsights(
         'calculated',
 
       confidence:
-        cashFlow.confidence,
+        'medium',
 
       title:
         'Cash-flow direction observed',
 
       statement:
-        `Across the observed transaction window, ${direction}.`,
+        `Across the observed transaction window, ${directionText}.`,
 
       evidence: {
         observation_days:
@@ -1358,18 +1738,28 @@ function buildExplainableInsights(
 
         net_change:
           cashFlow.net_change,
+
+        daily_net_change:
+          cashFlow.daily_net_change,
       },
     });
   }
+
+
+  /*
+   * --------------------------------------------------------------------------
+   * RUNWAY
+   * --------------------------------------------------------------------------
+   */
 
   const balance =
     intelligence.balance;
 
   if (
+    balance &&
     balance.status ===
       'declining' &&
-    balance.runway_days !==
-      null
+    balance.runway_days !== null
   ) {
     insights.push({
       id:
@@ -1382,7 +1772,7 @@ function buildExplainableInsights(
         'calculated',
 
       confidence:
-        balance.confidence,
+        'medium',
 
       title:
         'Observed cash runway',
@@ -1399,6 +1789,9 @@ function buildExplainableInsights(
 
         runway_days:
           balance.runway_days,
+
+        runway_months:
+          balance.runway_months,
       },
 
       qualification:
@@ -1406,14 +1799,21 @@ function buildExplainableInsights(
     });
   }
 
+
+  /*
+   * --------------------------------------------------------------------------
+   * SPENDING CONCENTRATION
+   * --------------------------------------------------------------------------
+   */
+
   const behavior =
     intelligence.behavior;
 
   if (
+    behavior &&
     behavior.evidence_state ===
       'supported' &&
-    behavior.top_categories.length >
-      0
+    behavior.top_categories.length > 0
   ) {
     const top =
       behavior.top_categories[0];
@@ -1429,7 +1829,7 @@ function buildExplainableInsights(
         'calculated',
 
       confidence:
-        behavior.confidence,
+        'medium',
 
       title:
         'Spending concentration observed',
@@ -1452,7 +1852,7 @@ function buildExplainableInsights(
       },
 
       qualification:
-        'This describes observed transaction history and does not by itself establish that the spending is unnecessary or problematic.',
+        'This describes the observed transaction history and does not by itself establish that the spending is unnecessary or problematic.',
     });
   }
 
@@ -1460,9 +1860,9 @@ function buildExplainableInsights(
 }
 
 
-/* -------------------------------------------------------------------------- */
-/* PUBLIC API                                                                 */
-/* -------------------------------------------------------------------------- */
+/* ============================================================================
+ * PUBLIC API
+ * ========================================================================== */
 
 async function getFinancialIntelligence(
   userId
@@ -1477,8 +1877,43 @@ async function getFinancialIntelligence(
       intelligence
     );
 
+  /*
+   * Explicitly construct the public contract.
+   *
+   * This guarantees the major intelligence
+   * domains exist even when evidence is absent.
+   */
+
   return {
-    ...intelligence,
+    status:
+      'ok',
+
+    generated_at:
+      intelligence.generated_at,
+
+    evidence:
+      intelligence.evidence,
+
+    observation:
+      intelligence.observation,
+
+    accounts:
+      intelligence.accounts,
+
+    roundup:
+      intelligence.roundup,
+
+    income:
+      intelligence.income,
+
+    cash_flow:
+      intelligence.cash_flow,
+
+    balance:
+      intelligence.balance,
+
+    behavior:
+      intelligence.behavior,
 
     insights,
   };
@@ -1490,12 +1925,13 @@ module.exports = {
   loadAccounts,
 
   computeRoundupIntelligence,
+  computeIncomeIntelligence,
   computeCashFlowIntelligence,
   computeBalanceIntelligence,
   computeBehavioralIntelligence,
-  computeIncomeIntelligence,
 
   computeFinancialIntelligence,
+
   buildExplainableInsights,
 
   getFinancialIntelligence,
