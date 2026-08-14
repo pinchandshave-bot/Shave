@@ -1,127 +1,242 @@
-```javascript
 const crypto = require('crypto');
-const jwt = require('jsonwebtoken');
-const { jwtDecode } = require('jwt-decode');
-const { importJWK, jwtVerify } = require('jose');
 
 const pool = require('./db');
-const { plaidClient } = require('./plaidClient');
-const { syncOneItem } = require('./sync');
+const {
+  plaidClient,
+} = require('./plaidClient');
+const {
+  syncOneItem,
+} = require('./sync');
 
 
-const WEBHOOK_VERIFICATION_WINDOW_SECONDS = 5 * 60;
+/*
+ * Plaid webhook verification key cache.
+ *
+ * Plaid identifies the signing key with the JWT "kid".
+ * Keys can rotate, so the cache is keyed by kid rather than
+ * assuming that one verification key remains valid forever.
+ */
+const verificationKeyCache =
+  new Map();
+
+
+const WEBHOOK_MAX_AGE_SECONDS =
+  5 * 60;
+
+
+/* -------------------------------------------------------------------------- */
+/* JWT / PLAID VERIFICATION                                                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Decode one base64url JWT component.
+ *
+ * This is decoding only.
+ * Signature verification happens separately below.
+ */
+function decodeJwtPart(
+  value
+) {
+  const normalized =
+    value
+      .replace(/-/g, '+')
+      .replace(/_/g, '/');
+
+  const padding =
+    normalized.length % 4;
+
+  const padded =
+    padding === 0
+      ? normalized
+      : normalized +
+        '='.repeat(
+          4 - padding
+        );
+
+  return JSON.parse(
+    Buffer.from(
+      padded,
+      'base64'
+    ).toString('utf8')
+  );
+}
 
 
 /**
- * Plaid webhook verification.
+ * Decode a JWT without trusting its contents.
+ */
+function decodeJwt(
+  token
+) {
+  if (
+    typeof token !==
+      'string' ||
+    token.split('.').length !==
+      3
+  ) {
+    throw new Error(
+      'Invalid Plaid verification JWT'
+    );
+  }
+
+  const [
+    encodedHeader,
+    encodedPayload,
+    encodedSignature,
+  ] =
+    token.split('.');
+
+  return {
+    encodedHeader,
+    encodedPayload,
+    encodedSignature,
+
+    header:
+      decodeJwtPart(
+        encodedHeader
+      ),
+
+    payload:
+      decodeJwtPart(
+        encodedPayload
+      ),
+  };
+}
+
+
+/**
+ * Retrieve the Plaid webhook verification key for a JWT kid.
+ */
+async function getVerificationKey(
+  keyId
+) {
+  if (
+    verificationKeyCache.has(
+      keyId
+    )
+  ) {
+    return verificationKeyCache.get(
+      keyId
+    );
+  }
+
+  const response =
+    await plaidClient.webhookVerificationKeyGet(
+      {
+        key_id: keyId,
+      }
+    );
+
+  const key =
+    response?.data?.key;
+
+  if (!key) {
+    throw new Error(
+      'Plaid did not return a webhook verification key'
+    );
+  }
+
+  if (
+    key.kid !== keyId
+  ) {
+    throw new Error(
+      'Plaid webhook verification key ID mismatch'
+    );
+  }
+
+  verificationKeyCache.set(
+    keyId,
+    key
+  );
+
+  return key;
+}
+
+
+/**
+ * Verify the authenticity and integrity of a Plaid webhook.
  *
- * Plaid sends:
+ * Plaid signs the request with an ES256 JWT.
  *
- *   plaid-verification: <JWT>
+ * Verification requirements:
  *
- * The JWT contains:
- *
- *   request_body_sha256
- *   iat
- *   key_id
- *
- * We verify:
- *
- *   1. The JWT signature using Plaid's webhook verification key.
- *   2. The JWT is recent.
- *   3. The SHA-256 hash of the RAW request body matches the JWT claim.
- *
- * The raw body is mandatory here.
+ * 1. Plaid-Verification header must exist.
+ * 2. JWT algorithm must be ES256.
+ * 3. JWT kid must identify the verification key.
+ * 4. Signature must validate.
+ * 5. iat must be no more than five minutes old.
+ * 6. SHA-256 of the exact raw request body must match
+ *    request_body_sha256 in the verified JWT.
  */
 async function verifyPlaidWebhook(
   rawBody,
-  verificationToken
+  verificationHeader
 ) {
-  if (!rawBody) {
-    throw new Error(
-      'Plaid webhook raw request body is required'
-    );
-  }
-
-  if (!verificationToken) {
-    throw new Error(
-      'Plaid webhook verification token is required'
-    );
-  }
-
-
-  let decoded;
-
-  try {
-    decoded =
-      jwtDecode(
-        verificationToken
-      );
-  } catch (err) {
-    throw new Error(
-      'Invalid Plaid webhook verification JWT'
-    );
-  }
-
-
-  const keyId =
-    decoded.key_id;
-
-  if (!keyId) {
-    throw new Error(
-      'Plaid webhook verification JWT is missing key_id'
-    );
-  }
-
-
-  const verificationKeyResponse =
-    await plaidClient.webhookVerificationKeyGet({
-      key_id: keyId,
-    });
-
-
-  const verificationKey =
-    verificationKeyResponse.data.key;
-
-
-  if (!verificationKey) {
-    throw new Error(
-      'Plaid webhook verification key was not returned'
-    );
-  }
-
-
-  /*
-   * Plaid's verification key is a JWK.
-   *
-   * Convert it to a jose-compatible CryptoKey.
-   */
-  const publicKey =
-    await importJWK(
-      verificationKey,
-      'ES256'
-    );
-
-
-  await jwtVerify(
-    verificationToken,
-    publicKey,
-    {
-      algorithms: ['ES256'],
-    }
-  );
-
-
-  const issuedAt =
-    Number(decoded.iat);
-
   if (
-    !Number.isFinite(
-      issuedAt
-    )
+    !verificationHeader
   ) {
     throw new Error(
-      'Plaid webhook verification JWT is missing iat'
+      'Missing Plaid-Verification header'
+    );
+  }
+
+  const decoded =
+    decodeJwt(
+      verificationHeader
+    );
+
+  const header =
+    decoded.header;
+
+  const payload =
+    decoded.payload;
+
+  if (
+    header.alg !==
+    'ES256'
+  ) {
+    throw new Error(
+      'Unsupported Plaid webhook signing algorithm'
+    );
+  }
+
+  if (
+    header.typ &&
+    header.typ !==
+      'JWT'
+  ) {
+    throw new Error(
+      'Invalid Plaid webhook JWT type'
+    );
+  }
+
+  if (
+    !header.kid ||
+    typeof header.kid !==
+      'string'
+  ) {
+    throw new Error(
+      'Plaid webhook JWT is missing kid'
+    );
+  }
+
+  if (
+    !payload.iat ||
+    typeof payload.iat !==
+      'number'
+  ) {
+    throw new Error(
+      'Plaid webhook JWT is missing iat'
+    );
+  }
+
+  if (
+    !payload.request_body_sha256 ||
+    typeof payload.request_body_sha256 !==
+      'string'
+  ) {
+    throw new Error(
+      'Plaid webhook JWT is missing request_body_sha256'
     );
   }
 
@@ -131,80 +246,187 @@ async function verifyPlaidWebhook(
       Date.now() / 1000
     );
 
+  const age =
+    now - payload.iat;
 
+
+  /*
+   * Reject timestamps too far in the future as well as
+   * timestamps older than the five-minute verification window.
+   */
   if (
-    Math.abs(
-      now - issuedAt
-    ) >
-    WEBHOOK_VERIFICATION_WINDOW_SECONDS
+    age < 0 ||
+    age >
+      WEBHOOK_MAX_AGE_SECONDS
   ) {
     throw new Error(
-      'Plaid webhook verification JWT is outside the allowed time window'
+      'Plaid webhook verification JWT is outside the five-minute validity window'
     );
   }
 
 
-  const expectedHash =
-    decoded.request_body_sha256;
+  const key =
+    await getVerificationKey(
+      header.kid
+    );
 
 
-  if (!expectedHash) {
+  if (
+    key.alg !==
+      'ES256' ||
+    key.kty !==
+      'EC' ||
+    key.crv !==
+      'P-256' ||
+    !key.x ||
+    !key.y
+  ) {
     throw new Error(
-      'Plaid webhook verification JWT is missing request_body_sha256'
+      'Invalid Plaid webhook verification JWK'
     );
   }
 
 
-  const actualHash =
+  const publicKey =
+    crypto.createPublicKey({
+      key,
+      format: 'jwk',
+    });
+
+
+  const signingInput =
+    decoded.encodedHeader +
+    '.' +
+    decoded.encodedPayload;
+
+
+  const signature =
+    Buffer.from(
+      decoded.encodedSignature
+        .replace(/-/g, '+')
+        .replace(/_/g, '/')
+        .padEnd(
+          Math.ceil(
+            decoded.encodedSignature.length /
+              4
+          ) *
+            4,
+          '='
+        ),
+      'base64'
+    );
+
+
+  const verifier =
+    crypto.createVerify(
+      'SHA256'
+    );
+
+
+  verifier.update(
+    signingInput
+  );
+
+  verifier.end();
+
+
+  const signatureValid =
+    verifier.verify(
+      {
+        key: publicKey,
+        dsaEncoding:
+          'ieee-p1363',
+      },
+      signature
+    );
+
+
+  if (
+    !signatureValid
+  ) {
+    /*
+     * If the cached key is stale because Plaid rotated keys,
+     * remove it and allow a fresh request on the next webhook.
+     */
+    verificationKeyCache.delete(
+      header.kid
+    );
+
+    throw new Error(
+      'Invalid Plaid webhook signature'
+    );
+  }
+
+
+  const bodyHash =
     crypto
-      .createHash('sha256')
-      .update(rawBody)
+      .createHash(
+        'sha256'
+      )
+      .update(
+        rawBody
+      )
       .digest('hex');
 
 
-  const expectedBuffer =
+  const claimedHash =
+    payload.request_body_sha256;
+
+
+  const bodyHashBuffer =
     Buffer.from(
-      expectedHash,
-      'hex'
+      bodyHash,
+      'utf8'
     );
 
-  const actualBuffer =
+  const claimedHashBuffer =
     Buffer.from(
-      actualHash,
-      'hex'
+      claimedHash,
+      'utf8'
     );
 
 
   if (
-    expectedBuffer.length !==
-    actualBuffer.length
+    bodyHashBuffer.length !==
+    claimedHashBuffer.length
   ) {
     throw new Error(
-      'Plaid webhook request body hash mismatch'
+      'Plaid webhook body hash mismatch'
     );
   }
 
 
   if (
     !crypto.timingSafeEqual(
-      expectedBuffer,
-      actualBuffer
+      bodyHashBuffer,
+      claimedHashBuffer
     )
   ) {
     throw new Error(
-      'Plaid webhook request body hash mismatch'
+      'Plaid webhook body hash mismatch'
     );
   }
 
 
-  return decoded;
+  return {
+    header,
+    payload,
+  };
 }
 
 
+/* -------------------------------------------------------------------------- */
+/* ITEM LOOKUP                                                                */
+/* -------------------------------------------------------------------------- */
+
 /**
- * Find the local Plaid Item associated with a Plaid Item ID.
+ * Find the local Plaid Item associated with the Plaid item_id.
+ *
+ * Never trust a user ID supplied by the webhook body to determine
+ * ownership of local financial records. The authoritative local
+ * relationship is the plaid_items table.
  */
-async function getPlaidItem(
+async function getLocalItem(
   plaidItemId
 ) {
   const result =
@@ -221,9 +443,10 @@ async function getPlaidItem(
         WHERE plaid_item_id = $1
         LIMIT 1
       `,
-      [plaidItemId]
+      [
+        plaidItemId,
+      ]
     );
-
 
   if (
     result.rows.length ===
@@ -232,87 +455,272 @@ async function getPlaidItem(
     return null;
   }
 
-
   return result.rows[0];
 }
 
 
+/* -------------------------------------------------------------------------- */
+/* ITEM WEBHOOK HANDLING                                                      */
+/* -------------------------------------------------------------------------- */
+
 /**
- * Handle Plaid's transaction update notification.
+ * Mark a local Item as requiring user attention.
  *
- * Plaid does NOT send the transaction dataset through this webhook.
- *
- * The webhook is the notification mechanism.
- *
- * The existing sync engine is responsible for retrieving the actual
- * changes through /transactions/sync.
+ * We retain the Item and its financial history.
+ * The status communicates that Plaid requires an Item update.
  */
-async function handleTransactionUpdate(
-  webhook
+async function handleItemError(
+  body
 ) {
-  const {
-    item_id: plaidItemId,
-    webhook_code: webhookCode,
-  } = webhook;
+  if (
+    !body.item_id
+  ) {
+    return {
+      handled: false,
+      reason:
+        'ITEM webhook did not contain item_id',
+    };
+  }
 
-
-  if (!plaidItemId) {
-    throw new Error(
-      'Plaid transaction webhook is missing item_id'
+  const item =
+    await getLocalItem(
+      body.item_id
     );
+
+  if (!item) {
+    console.warn(
+      'Received Plaid ITEM webhook for unknown Item:',
+      body.item_id
+    );
+
+    return {
+      handled: false,
+      reason:
+        'Unknown Plaid Item',
+    };
+  }
+
+
+  const errorCode =
+    body.error?.error_code ||
+    null;
+
+
+  const errorMessage =
+    body.error?.error_message ||
+    body.error?.display_message ||
+    null;
+
+
+  /*
+   * ITEM ERROR means the Item needs attention.
+   *
+   * We do not delete financial data.
+   * We do not delete the access token.
+   * We preserve the Item so the user can repair it through
+   * Plaid Link update mode.
+   */
+  await pool.query(
+    `
+      UPDATE plaid_items
+      SET
+        status = 'error',
+        updated_at = now()
+      WHERE id = $1
+    `,
+    [
+      item.id,
+    ]
+  );
+
+
+  console.warn(
+    'Plaid Item entered error state:',
+    {
+      plaid_item_id:
+        body.item_id,
+      error_code:
+        errorCode,
+      error_message:
+        errorMessage,
+    }
+  );
+
+
+  return {
+    handled: true,
+    action:
+      'item_marked_error',
+    plaid_item_id:
+      body.item_id,
+    error_code:
+      errorCode,
+  };
+}
+
+
+/**
+ * Mark an Item active again after Plaid reports that a previously
+ * broken Item has been repaired.
+ */
+async function handleItemRepaired(
+  body
+) {
+  if (
+    !body.item_id
+  ) {
+    return {
+      handled: false,
+      reason:
+        'ITEM webhook did not contain item_id',
+    };
+  }
+
+  const item =
+    await getLocalItem(
+      body.item_id
+    );
+
+  if (!item) {
+    console.warn(
+      'Received Plaid repaired webhook for unknown Item:',
+      body.item_id
+    );
+
+    return {
+      handled: false,
+      reason:
+        'Unknown Plaid Item',
+    };
+  }
+
+
+  await pool.query(
+    `
+      UPDATE plaid_items
+      SET
+        status = 'active',
+        updated_at = now()
+      WHERE id = $1
+    `,
+    [
+      item.id,
+    ]
+  );
+
+
+  return {
+    handled: true,
+    action:
+      'item_marked_active',
+    plaid_item_id:
+      body.item_id,
+  };
+}
+
+
+/* -------------------------------------------------------------------------- */
+/* TRANSACTION WEBHOOK HANDLING                                               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Handle transaction webhooks.
+ *
+ * iBag uses /transactions/sync.
+ *
+ * Therefore the webhook itself is only the notification that
+ * new transaction state exists. The actual financial records are
+ * retrieved through syncOneItem(), which owns:
+ *
+ *   added
+ *   modified
+ *   removed
+ *   cursor advancement
+ *   Round-Up reconciliation
+ *   transaction history preservation
+ */
+async function handleTransactionWebhook(
+  body
+) {
+  const webhookCode =
+    body.webhook_code;
+
+
+  if (
+    !body.item_id
+  ) {
+    return {
+      handled: false,
+      reason:
+        'TRANSACTIONS webhook did not contain item_id',
+    };
   }
 
 
   const item =
-    await getPlaidItem(
-      plaidItemId
+    await getLocalItem(
+      body.item_id
     );
 
 
   if (!item) {
     console.warn(
-      `Received Plaid webhook for unknown Item ${plaidItemId}`
+      'Received Plaid transaction webhook for unknown Item:',
+      body.item_id
     );
 
     return {
-      status: 'ignored',
-      reason: 'UNKNOWN_ITEM',
-      plaid_item_id:
-        plaidItemId,
-      webhook_code:
-        webhookCode,
+      handled: false,
+      reason:
+        'Unknown Plaid Item',
     };
   }
 
 
   /*
-   * If the Item is no longer active, acknowledge the webhook
-   * without attempting synchronization.
+   * With transactions/sync, SYNC_UPDATES_AVAILABLE is the
+   * authoritative transaction-change notification.
+   *
+   * The older INITIAL_UPDATE, HISTORICAL_UPDATE,
+   * DEFAULT_UPDATE, and TRANSACTIONS_REMOVED webhooks are
+   * intentionally not used as separate synchronization paths.
+   */
+  if (
+    webhookCode !==
+    'SYNC_UPDATES_AVAILABLE'
+  ) {
+    return {
+      handled: true,
+      action:
+        'ignored_non_sync_transaction_webhook',
+      webhook_code:
+        webhookCode,
+      plaid_item_id:
+        body.item_id,
+    };
+  }
+
+
+  /*
+   * If an Item is not currently active, do not pull new financial
+   * data automatically. The Item must be repaired/re-enabled first.
    */
   if (
     item.status !==
     'active'
   ) {
     return {
-      status: 'ignored',
-      reason:
-        'ITEM_NOT_ACTIVE',
+      handled: true,
+      action:
+        'sync_skipped_item_not_active',
       plaid_item_id:
-        plaidItemId,
-      webhook_code:
-        webhookCode,
+        body.item_id,
+      item_status:
+        item.status,
     };
   }
 
 
-  /*
-   * The webhook is only the trigger.
-   *
-   * syncOneItem() performs the authoritative /transactions/sync
-   * operation, applies added/modified/removed changes, reconciles
-   * Round-Up intelligence, and advances the cursor only after
-   * successful processing.
-   */
   const syncResult =
     await syncOneItem(
       item
@@ -322,190 +730,210 @@ async function handleTransactionUpdate(
   if (
     syncResult?.error
   ) {
-    return {
-      status: 'error',
-      reason:
-        'TRANSACTION_SYNC_FAILED',
-      plaid_item_id:
-        plaidItemId,
-      webhook_code:
-        webhookCode,
-      sync:
-        syncResult,
-    };
+    throw new Error(
+      syncResult.error
+    );
   }
 
 
   return {
-    status: 'processed',
+    handled: true,
+    action:
+      'item_synchronized',
     plaid_item_id:
-      plaidItemId,
-    webhook_code:
-      webhookCode,
+      body.item_id,
     sync:
       syncResult,
   };
 }
 
 
+/* -------------------------------------------------------------------------- */
+/* WEBHOOK ROUTER                                                             */
+/* -------------------------------------------------------------------------- */
+
 /**
- * Express webhook handler.
+ * Process one verified Plaid webhook.
+ */
+async function processPlaidWebhook(
+  body
+) {
+  if (
+    !body ||
+    typeof body !==
+      'object'
+  ) {
+    throw new Error(
+      'Plaid webhook body is invalid'
+    );
+  }
+
+
+  const webhookType =
+    body.webhook_type;
+
+
+  if (
+    webhookType ===
+    'TRANSACTIONS'
+  ) {
+    return handleTransactionWebhook(
+      body
+    );
+  }
+
+
+  if (
+    webhookType ===
+    'ITEM'
+  ) {
+    if (
+      body.webhook_code ===
+      'ERROR'
+    ) {
+      return handleItemError(
+        body
+      );
+    }
+
+
+    if (
+      body.webhook_code ===
+      'LOGIN_REPAIRED'
+    ) {
+      return handleItemRepaired(
+        body
+      );
+    }
+
+
+    /*
+     * Other Item notifications are acknowledged but do not
+     * automatically mutate financial transaction history.
+     */
+    return {
+      handled: true,
+      action:
+        'acknowledged_item_webhook',
+      webhook_code:
+        body.webhook_code ||
+        null,
+      plaid_item_id:
+        body.item_id ||
+        null,
+    };
+  }
+
+
+  /*
+   * iBag may add additional Plaid products later.
+   *
+   * Unknown webhook families are acknowledged after successful
+   * authenticity verification rather than being treated as
+   * financial transaction updates.
+   */
+  console.log(
+    'Acknowledged Plaid webhook:',
+    {
+      webhook_type:
+        webhookType ||
+        null,
+      webhook_code:
+        body.webhook_code ||
+        null,
+      item_id:
+        body.item_id ||
+        null,
+    }
+  );
+
+
+  return {
+    handled: true,
+    action:
+      'acknowledged_unhandled_webhook_type',
+    webhook_type:
+      webhookType ||
+      null,
+    webhook_code:
+      body.webhook_code ||
+      null,
+    plaid_item_id:
+      body.item_id ||
+      null,
+  };
+}
+
+
+/* -------------------------------------------------------------------------- */
+/* EXPRESS HANDLER                                                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Express handler for POST /plaid/webhook.
  *
- * IMPORTANT:
- *
- * This handler expects req.rawBody to contain the exact bytes received
- * from Plaid. The JSON parser must not alter the body before this
- * handler runs.
+ * index.js captures req.rawBody before Express JSON parsing.
  */
 async function plaidWebhook(
   req,
   res
 ) {
   try {
-    const verificationToken =
-      req.header(
-        'plaid-verification'
+    if (
+      !req.rawBody ||
+      !Buffer.isBuffer(
+        req.rawBody
+      )
+    ) {
+      console.error(
+        'Plaid webhook rejected: raw request body unavailable'
       );
 
-
-    if (
-      !verificationToken
-    ) {
-      return res.status(401).json({
-        status: 'error',
-        message:
-          'Plaid webhook verification token is required',
-      });
-    }
-
-
-    if (
-      !req.rawBody
-    ) {
       return res.status(400).json({
         status: 'error',
         message:
-          'Plaid webhook raw request body is unavailable',
+          'Raw webhook body unavailable',
       });
     }
+
+
+    const verificationHeader =
+      req.get(
+        'Plaid-Verification'
+      );
 
 
     await verifyPlaidWebhook(
       req.rawBody,
-      verificationToken
+      verificationHeader
     );
 
 
-    const webhook =
-      req.body;
-
-
-    if (
-      !webhook ||
-      typeof webhook !==
-        'object'
-    ) {
-      return res.status(400).json({
-        status: 'error',
-        message:
-          'Invalid Plaid webhook body',
-      });
-    }
-
-
-    const webhookType =
-      webhook.webhook_type;
+    /*
+     * Verification succeeded.
+     *
+     * req.body is now safe to interpret as the authenticated
+     * webhook payload.
+     */
+    const result =
+      await processPlaidWebhook(
+        req.body
+      );
 
 
     /*
-     * Transactions notifications.
-     *
-     * SYNC_UPDATES_AVAILABLE is the primary notification that
-     * tells iBag to run /transactions/sync.
-     *
-     * Other transaction webhook codes may be useful for observability
-     * but should not blindly trigger a transaction synchronization.
+     * Plaid only needs confirmation that the webhook was accepted.
+     * The useful processing result is logged server-side rather
+     * than exposed to Plaid as an application API contract.
      */
-    if (
-      webhookType ===
-      'TRANSACTIONS'
-    ) {
-      if (
-        webhook.webhook_code ===
-        'SYNC_UPDATES_AVAILABLE'
-      ) {
-        const result =
-          await handleTransactionUpdate(
-            webhook
-          );
+    console.log(
+      'Plaid webhook processed:',
+      result
+    );
 
 
-        /*
-         * Return success after the synchronization attempt has been
-         * handled. Plaid should not be given an authentication or
-         * transport error merely because an unknown Item was received.
-         */
-        if (
-          result.status ===
-          'error'
-        ) {
-          console.error(
-            'Plaid transaction webhook sync failed:',
-            result
-          );
-
-          return res.status(500).json({
-            status: 'error',
-            message:
-              'Transaction synchronization failed',
-          });
-        }
-
-
-        return res.status(200).json({
-          status: 'ok',
-          result,
-        });
-      }
-
-
-      /*
-       * Other TRANSACTIONS webhook codes are acknowledged but do not
-       * automatically initiate synchronization.
-       */
-      return res.status(200).json({
-        status: 'ok',
-        result: {
-          status:
-            'acknowledged',
-          webhook_type:
-            webhookType,
-          webhook_code:
-            webhook.webhook_code,
-        },
-      });
-    }
-
-
-    /*
-     * Webhook types outside Transactions are acknowledged here.
-     *
-     * Their dedicated intelligence/synchronization behavior will be
-     * implemented when those Plaid products are intentionally
-     * activated by iBag.
-     */
     return res.status(200).json({
       status: 'ok',
-      result: {
-        status:
-          'acknowledged',
-        webhook_type:
-          webhookType ||
-          null,
-        webhook_code:
-          webhook.webhook_code ||
-          null,
-      },
     });
   } catch (err) {
     console.error(
@@ -515,23 +943,27 @@ async function plaidWebhook(
 
 
     /*
-     * Authentication / verification failures are rejected.
+     * A verification failure is rejected explicitly.
      *
-     * Processing failures are also surfaced as server errors so the
-     * integration does not silently claim that an update was handled
-     * when it was not.
+     * A processing failure is also returned as a non-2xx response
+     * so the webhook is not falsely acknowledged as successfully
+     * processed.
      */
-    return res.status(500).json({
+    return res.status(400).json({
       status: 'error',
       message:
-        'Plaid webhook processing failed',
+        'Plaid webhook could not be verified or processed.',
     });
   }
 }
 
 
+/* -------------------------------------------------------------------------- */
+/* EXPORT                                                                     */
+/* -------------------------------------------------------------------------- */
+
 module.exports = {
   plaidWebhook,
   verifyPlaidWebhook,
+  processPlaidWebhook,
 };
-```
