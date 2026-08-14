@@ -89,10 +89,12 @@ async function getMe(req, res) {
 /**
  * Dashboard financial state.
  *
- * Every value comes from the authenticated user's
- * existing database records.
+ * This endpoint is intentionally kept independent from the
+ * financial-intelligence engine so the base dashboard remains
+ * stable and readable from the existing database schema.
  *
- * Read-only.
+ * Every financial value comes from the authenticated user's
+ * existing database records.
  */
 async function getDashboard(req, res) {
   const userId = req.user.id;
@@ -181,8 +183,13 @@ async function getDashboard(req, res) {
      * ROUND-UP STATE
      * ----------------------------------------------------------------------
      *
-     * Analytical opportunity only.
-     * No money movement occurs here.
+     * This represents analytical Round-Up opportunity.
+     *
+     * It is NOT:
+     * - money transferred
+     * - money saved
+     * - money moved
+     * - a balance adjustment
      */
 
     const roundupStateResult = await pool.query(
@@ -394,6 +401,12 @@ async function getDashboard(req, res) {
       [userId]
     );
 
+    /*
+     * ----------------------------------------------------------------------
+     * NORMALIZE EMPTY STATES
+     * ----------------------------------------------------------------------
+     */
+
     const transactionState =
       transactionStateResult.rows[0] || {
         transaction_count: 0,
@@ -411,6 +424,12 @@ async function getDashboard(req, res) {
         smallest_roundup: 0,
         largest_roundup: 0,
       };
+
+    /*
+     * ----------------------------------------------------------------------
+     * RESPONSE
+     * ----------------------------------------------------------------------
+     */
 
     return res.json({
       status: 'ok',
@@ -449,7 +468,10 @@ async function getDashboard(req, res) {
         recentRoundupsResult.rows,
     });
   } catch (err) {
-    console.error('Get dashboard failed:', err);
+    console.error(
+      'Get dashboard failed:',
+      err
+    );
 
     return res.status(500).json({
       status: 'error',
@@ -494,7 +516,10 @@ async function getSummary(req, res) {
       summary: result.rows[0],
     });
   } catch (err) {
-    console.error('Get summary failed:', err);
+    console.error(
+      'Get summary failed:',
+      err
+    );
 
     return res.status(500).json({
       status: 'error',
@@ -544,7 +569,10 @@ async function getAccounts(req, res) {
       accounts: result.rows,
     });
   } catch (err) {
-    console.error('Get accounts failed:', err);
+    console.error(
+      'Get accounts failed:',
+      err
+    );
 
     return res.status(500).json({
       status: 'error',
@@ -603,7 +631,10 @@ async function getTransactions(req, res) {
       transactions: result.rows,
     });
   } catch (err) {
-    console.error('Get transactions failed:', err);
+    console.error(
+      'Get transactions failed:',
+      err
+    );
 
     return res.status(500).json({
       status: 'error',
@@ -615,10 +646,12 @@ async function getTransactions(req, res) {
 
 
 /**
- * Evidence-gated intelligence.
+ * Insights compatibility endpoint.
  *
- * The actual intelligence engine can be connected here
- * without inventing financial conclusions.
+ * Intelligence is deliberately not duplicated here.
+ * The authoritative intelligence engine can be wired into
+ * this endpoint separately without changing the dashboard
+ * database contract.
  */
 async function getInsights(req, res) {
   try {
@@ -627,7 +660,10 @@ async function getInsights(req, res) {
       insights: [],
     });
   } catch (err) {
-    console.error('Get insights failed:', err);
+    console.error(
+      'Get insights failed:',
+      err
+    );
 
     return res.status(500).json({
       status: 'error',
@@ -639,9 +675,11 @@ async function getInsights(req, res) {
 
 
 /**
- * Connected-account balance aggregation.
+ * Net worth compatibility endpoint.
  *
- * Compatibility name retained.
+ * Retained for the existing API contract.
+ *
+ * This represents connected-account current balances.
  */
 async function getNetWorth(req, res) {
   try {
@@ -670,7 +708,10 @@ async function getNetWorth(req, res) {
         result.rows[0].net_worth,
     });
   } catch (err) {
-    console.error('Get net worth failed:', err);
+    console.error(
+      'Get net worth failed:',
+      err
+    );
 
     return res.status(500).json({
       status: 'error',
@@ -683,6 +724,9 @@ async function getNetWorth(req, res) {
 
 /**
  * Income compatibility endpoint.
+ *
+ * Kept evidence-gated until the authoritative
+ * intelligence engine is connected to this route.
  */
 async function getIncome(req, res) {
   try {
@@ -693,7 +737,10 @@ async function getIncome(req, res) {
         'Income analysis requires qualifying connected financial data.',
     });
   } catch (err) {
-    console.error('Get income failed:', err);
+    console.error(
+      'Get income failed:',
+      err
+    );
 
     return res.status(500).json({
       status: 'error',
@@ -706,6 +753,9 @@ async function getIncome(req, res) {
 
 /**
  * Cash-flow compatibility endpoint.
+ *
+ * Kept evidence-gated until the authoritative
+ * intelligence engine is connected to this route.
  */
 async function getCashFlow(req, res) {
   try {
@@ -716,7 +766,10 @@ async function getCashFlow(req, res) {
         'Cash-flow analysis requires qualifying connected financial data.',
     });
   } catch (err) {
-    console.error('Get cash flow failed:', err);
+    console.error(
+      'Get cash flow failed:',
+      err
+    );
 
     return res.status(500).json({
       status: 'error',
