@@ -1,705 +1,705 @@
+require('dotenv').config();
+
+const express = require('express');
+const cors = require('cors');
+const rateLimit = require('express-rate-limit');
+
 const pool = require('./db');
 
-/**
- * Return the authenticated user's core iBag state.
- *
- * Read-only.
- * No financial data is created, modified, fabricated, or seeded.
+const {
+  plaidClient,
+  PLAID_PRODUCTS,
+} = require('./plaidClient');
+
+const {
+  encrypt,
+  decrypt,
+} = require('./crypto');
+
+const {
+  requireAuth,
+  requireInternalSecret,
+  signup,
+  login,
+} = require('./auth');
+
+const {
+  runSync,
+  syncOneItem,
+} = require('./sync');
+
+const me = require('./me');
+
+/*
+ * STARTUP LOGGING
  */
-async function getMe(req, res) {
+
+console.log('Booting Shave API...');
+console.log('Running file:', __filename);
+console.log('NODE_ENV:', process.env.NODE_ENV);
+console.log('PORT (env):', process.env.PORT);
+
+/*
+ * REQUIRED HANDLERS
+ *
+ * These are the handlers the current frontend/API contract
+ * actually depends on.
+ *
+ * Do not invent missing exports.
+ */
+const requiredHandlers = {
+  requireAuth,
+  requireInternalSecret,
+  signup,
+  login,
+  runSync,
+  syncOneItem,
+  getDashboard: me.getDashboard,
+};
+
+for (const [name, handler] of Object.entries(requiredHandlers)) {
+  if (typeof handler !== 'function') {
+    throw new Error(
+      `Startup configuration error: "${name}" is not exported as a function.`
+    );
+  }
+}
+
+/*
+ * OPTIONAL READ HANDLERS
+ *
+ * Some versions of me.js may not expose every read endpoint.
+ * An absent optional handler must not prevent the API from starting.
+ */
+const optionalHandlers = {
+  getMe: me.getMe,
+  getSummary: me.getSummary,
+  getAccounts: me.getAccounts,
+  getTransactions: me.getTransactions,
+  getRoundups: me.getRoundups,
+  getInsights: me.getInsights,
+  getNetWorth: me.getNetWorth,
+  getIncome: me.getIncome,
+  getCashFlow: me.getCashFlow,
+};
+
+for (const [name, handler] of Object.entries(optionalHandlers)) {
+  console.log(
+    `${name}:`,
+    typeof handler === 'function'
+      ? 'available'
+      : 'not exported'
+  );
+}
+
+const app = express();
+
+app.use(
+  cors({
+    origin:
+      process.env.FRONTEND_ORIGIN ||
+      'https://shave.onrender.com',
+  }),
+);
+
+app.use(express.json());
+app.use(express.static('public'));
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 8,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    status: 'error',
+    message: 'Too many attempts. Try again later.',
+  },
+});
+
+/*
+ * Helper for optional GET handlers.
+ *
+ * If a handler does not exist in the current me.js,
+ * the API remains alive and that specific route returns
+ * a clear 501 response rather than crashing the server.
+ */
+function registerOptionalGet(path, handler) {
+  if (typeof handler === 'function') {
+    app.get(path, requireAuth, handler);
+    return;
+  }
+
+  app.get(path, requireAuth, (req, res) => {
+    res.status(501).json({
+      status: 'error',
+      message: `The endpoint ${path} is not implemented by the current API read module.`,
+    });
+  });
+}
+
+/*
+ * SERVICE / HEALTH
+ */
+
+app.get('/', (req, res) => {
+  console.log('GET / hit');
+
+  res.json({
+    status: 'ok',
+    service: 'shave-api',
+    message: 'Shave API is running',
+  });
+});
+
+app.get('/health', (req, res) => {
+  console.log(
+    'GET /health hit at',
+    new Date().toISOString()
+  );
+
+  res.json({
+    status: 'ok',
+    service: 'shave-api',
+    time: new Date().toISOString(),
+  });
+});
+
+app.get('/db-check', async (req, res) => {
+  console.log('GET /db-check hit');
+
   try {
-    const userResult = await pool.query(
-      `
-        SELECT
-          id,
-          email,
-          created_at
-        FROM users
-        WHERE id = $1
-        LIMIT 1
-      `,
-      [req.user.id]
+    const result = await pool.query(`
+      SELECT
+        now() AS db_time,
+        count(*) AS user_count
+      FROM users
+    `);
+
+    console.log(
+      'DB check result:',
+      result.rows[0]
     );
 
-    if (userResult.rows.length === 0) {
-      return res.status(404).json({
+    res.json({
+      status: 'ok',
+      db_time: result.rows[0].db_time,
+      user_count: result.rows[0].user_count,
+    });
+  } catch (err) {
+    console.error(
+      'Database check failed:',
+      err
+    );
+
+    res.status(500).json({
+      status: 'error',
+      message: err.message,
+    });
+  }
+});
+
+/*
+ * AUTHENTICATION
+ */
+
+app.post(
+  '/auth/signup',
+  authLimiter,
+  signup
+);
+
+app.post(
+  '/auth/login',
+  authLimiter,
+  login
+);
+
+/*
+ * AUTHENTICATED USER / DASHBOARD
+ */
+
+registerOptionalGet(
+  '/me',
+  optionalHandlers.getMe
+);
+
+app.get(
+  '/me/dashboard',
+  requireAuth,
+  me.getDashboard
+);
+
+registerOptionalGet(
+  '/me/summary',
+  optionalHandlers.getSummary
+);
+
+registerOptionalGet(
+  '/me/accounts',
+  optionalHandlers.getAccounts
+);
+
+registerOptionalGet(
+  '/me/transactions',
+  optionalHandlers.getTransactions
+);
+
+registerOptionalGet(
+  '/me/roundups',
+  optionalHandlers.getRoundups
+);
+
+registerOptionalGet(
+  '/me/insights',
+  optionalHandlers.getInsights
+);
+
+registerOptionalGet(
+  '/me/net-worth',
+  optionalHandlers.getNetWorth
+);
+
+registerOptionalGet(
+  '/me/income',
+  optionalHandlers.getIncome
+);
+
+registerOptionalGet(
+  '/me/cash-flow',
+  optionalHandlers.getCashFlow
+);
+
+/*
+ * PLAID
+ */
+
+app.post(
+  '/plaid/create-link-token',
+  requireAuth,
+  async (req, res) => {
+    try {
+      const activeCount = await pool.query(`
+        SELECT count(*)
+        FROM plaid_items
+        WHERE status = 'active'
+      `);
+
+      const CAPACITY_LIMIT = 9;
+
+      if (
+        Number(activeCount.rows[0].count) >=
+        CAPACITY_LIMIT
+      ) {
+        return res.status(503).json({
+          status: 'error',
+          message:
+            'Shave is at capacity for new bank connections right now. Try again soon.',
+        });
+      }
+
+      const response =
+        await plaidClient.linkTokenCreate({
+          user: {
+            client_user_id: req.user.id,
+          },
+          client_name: 'iBag',
+          products: PLAID_PRODUCTS,
+          country_codes: ['US'],
+          language: 'en',
+        });
+
+      return res.json({
+        status: 'ok',
+        link_token:
+          response.data.link_token,
+      });
+    } catch (err) {
+      console.error(
+        'Plaid create link token failed:',
+        err
+      );
+
+      return res.status(500).json({
         status: 'error',
-        message: 'User not found',
+        detail:
+          err.response?.data ||
+          err.message,
       });
     }
-
-    const user = userResult.rows[0];
-
-    const ibagResult = await pool.query(
-      `
-        SELECT
-          id,
-          user_id,
-          created_at
-        FROM ibags
-        WHERE user_id = $1
-        LIMIT 1
-      `,
-      [user.id]
-    );
-
-    const accountsResult = await pool.query(
-      `
-        SELECT
-          a.id,
-          a.plaid_account_id,
-          a.name,
-          a.official_name,
-          a.mask,
-          a.type,
-          a.subtype,
-          a.current_balance,
-          a.available_balance,
-          a.balance_iso_currency_code,
-          a.balance_updated_at,
-          p.id AS plaid_item_db_id,
-          p.plaid_item_id,
-          p.institution_name
-        FROM accounts a
-        INNER JOIN plaid_items p
-          ON p.id = a.plaid_item_id
-        WHERE p.user_id = $1
-          AND p.status = 'active'
-        ORDER BY a.created_at ASC
-      `,
-      [user.id]
-    );
-
-    return res.json({
-      status: 'ok',
-      user,
-      ibag: ibagResult.rows[0] || null,
-      accounts: accountsResult.rows,
-    });
-  } catch (err) {
-    console.error('Get current user failed:', err);
-
-    return res.status(500).json({
-      status: 'error',
-      message: 'Unable to load your iBag right now',
-    });
   }
-}
-
-
-/**
- * Dashboard financial state.
- *
- * This is the first real dashboard aggregation endpoint.
- *
- * Every value comes from the authenticated user's existing
- * database records.
- */
-async function getDashboard(req, res) {
-  const userId = req.user.id;
-
-  try {
-    /*
-     * ----------------------------------------------------------------------
-     * ACCOUNTS / BALANCES
-     * ----------------------------------------------------------------------
-     */
-
-    const accountsResult = await pool.query(
-      `
-        SELECT
-          a.id,
-          a.plaid_account_id,
-          a.name,
-          a.official_name,
-          a.mask,
-          a.type,
-          a.subtype,
-          a.current_balance,
-          a.available_balance,
-          a.balance_iso_currency_code,
-          a.balance_updated_at,
-          p.institution_name
-        FROM accounts a
-        INNER JOIN plaid_items p
-          ON p.id = a.plaid_item_id
-        WHERE p.user_id = $1
-          AND p.status = 'active'
-        ORDER BY a.created_at ASC
-      `,
-      [userId]
-    );
-
-    /*
-     * ----------------------------------------------------------------------
-     * TRANSACTION STATE
-     * ----------------------------------------------------------------------
-     */
-
-    const transactionStateResult = await pool.query(
-      `
-        SELECT
-          COUNT(*)::int AS transaction_count,
-          COUNT(*) FILTER (
-            WHERE t.pending = true
-          )::int AS pending_transaction_count,
-          COUNT(*) FILTER (
-            WHERE t.pending = false
-          )::int AS posted_transaction_count,
-
-          MIN(
-            COALESCE(t.posted_date, t.authorized_date)
-          ) AS observation_start,
-
-          MAX(
-            COALESCE(t.posted_date, t.authorized_date)
-          ) AS observation_end
-
-        FROM transactions t
-        INNER JOIN accounts a
-          ON a.id = t.account_id
-        INNER JOIN plaid_items p
-          ON p.id = a.plaid_item_id
-
-        WHERE p.user_id = $1
-          AND p.status = 'active'
-          AND t.status = 'active'
-      `,
-      [userId]
-    );
-
-    /*
-     * ----------------------------------------------------------------------
-     * ROUND-UP STATE
-     * ----------------------------------------------------------------------
-     *
-     * Only active Round-Up events are included.
-     *
-     * This is an opportunity calculation.
-     * It is NOT money saved or money transferred.
-     */
-
-    const roundupStateResult = await pool.query(
-      `
-        SELECT
-          COUNT(*)::int AS eligible_purchase_count,
-
-          COALESCE(
-            SUM(r.roundup_amount),
-            0
-          ) AS roundup_opportunity,
-
-          COALESCE(
-            AVG(r.roundup_amount),
-            0
-          ) AS average_roundup,
-
-          COALESCE(
-            MIN(r.roundup_amount),
-            0
-          ) AS smallest_roundup,
-
-          COALESCE(
-            MAX(r.roundup_amount),
-            0
-          ) AS largest_roundup
-
-        FROM roundup_events r
-        INNER JOIN transactions t
-          ON t.id = r.transaction_id
-        INNER JOIN accounts a
-          ON a.id = t.account_id
-        INNER JOIN plaid_items p
-          ON p.id = a.plaid_item_id
-
-        WHERE r.user_id = $1
-          AND p.user_id = $1
-          AND p.status = 'active'
-          AND r.status = 'active'
-          AND r.eligible = true
-          AND t.status = 'active'
-      `,
-      [userId]
-    );
-
-    /*
-     * ----------------------------------------------------------------------
-     * ROUND-UP BY CATEGORY
-     * ----------------------------------------------------------------------
-     */
-
-    const roundupCategoryResult = await pool.query(
-      `
-        SELECT
-          COALESCE(
-            NULLIF(t.category, ''),
-            'Uncategorized'
-          ) AS category,
-
-          COUNT(*)::int AS purchase_count,
-
-          COALESCE(
-            SUM(r.roundup_amount),
-            0
-          ) AS roundup_opportunity
-
-        FROM roundup_events r
-
-        INNER JOIN transactions t
-          ON t.id = r.transaction_id
-
-        INNER JOIN accounts a
-          ON a.id = t.account_id
-
-        INNER JOIN plaid_items p
-          ON p.id = a.plaid_item_id
-
-        WHERE r.user_id = $1
-          AND p.user_id = $1
-          AND p.status = 'active'
-          AND r.status = 'active'
-          AND r.eligible = true
-          AND t.status = 'active'
-
-        GROUP BY
-          COALESCE(
-            NULLIF(t.category, ''),
-            'Uncategorized'
-          )
-
-        ORDER BY
-          roundup_opportunity DESC
-      `,
-      [userId]
-    );
-
-    /*
-     * ----------------------------------------------------------------------
-     * ROUND-UP BY MERCHANT
-     * ----------------------------------------------------------------------
-     */
-
-    const roundupMerchantResult = await pool.query(
-      `
-        SELECT
-          COALESCE(
-            NULLIF(t.merchant_name, ''),
-            'Unknown merchant'
-          ) AS merchant_name,
-
-          COUNT(*)::int AS purchase_count,
-
-          COALESCE(
-            SUM(r.roundup_amount),
-            0
-          ) AS roundup_opportunity,
-
-          COALESCE(
-            AVG(r.roundup_amount),
-            0
-          ) AS average_roundup
-
-        FROM roundup_events r
-
-        INNER JOIN transactions t
-          ON t.id = r.transaction_id
-
-        INNER JOIN accounts a
-          ON a.id = t.account_id
-
-        INNER JOIN plaid_items p
-          ON p.id = a.plaid_item_id
-
-        WHERE r.user_id = $1
-          AND p.user_id = $1
-          AND p.status = 'active'
-          AND r.status = 'active'
-          AND r.eligible = true
-          AND t.status = 'active'
-
-        GROUP BY
-          COALESCE(
-            NULLIF(t.merchant_name, ''),
-            'Unknown merchant'
-          )
-
-        ORDER BY
-          roundup_opportunity DESC
-      `,
-      [userId]
-    );
-
-    /*
-     * ----------------------------------------------------------------------
-     * RECENT ROUND-UP ACTIVITY
-     * ----------------------------------------------------------------------
-     */
-
-    const recentRoundupsResult = await pool.query(
-      `
-        SELECT
-          r.id,
-          r.transaction_id,
-          r.roundup_amount,
-          r.transaction_amount,
-          r.eligibility_reason,
-          r.rule_version,
-
-          t.merchant_name,
-          t.category,
-          t.pending,
-          t.authorized_date,
-          t.posted_date,
-
-          a.name AS account_name,
-          a.mask AS account_mask
-
-        FROM roundup_events r
-
-        INNER JOIN transactions t
-          ON t.id = r.transaction_id
-
-        INNER JOIN accounts a
-          ON a.id = t.account_id
-
-        INNER JOIN plaid_items p
-          ON p.id = a.plaid_item_id
-
-        WHERE r.user_id = $1
-          AND p.user_id = $1
-          AND p.status = 'active'
-          AND r.status = 'active'
-          AND r.eligible = true
-          AND t.status = 'active'
-
-        ORDER BY
-          COALESCE(
-            t.posted_date,
-            t.authorized_date
-          ) DESC NULLS LAST,
-          t.created_at DESC
-
-        LIMIT 10
-      `,
-      [userId]
-    );
-
-    /*
-     * ----------------------------------------------------------------------
-     * RETURN
-     * ----------------------------------------------------------------------
-     */
-
-    const transactionState =
-      transactionStateResult.rows[0] || {
-        transaction_count: 0,
-        pending_transaction_count: 0,
-        posted_transaction_count: 0,
-        observation_start: null,
-        observation_end: null,
-      };
-
-    const roundupState =
-      roundupStateResult.rows[0] || {
-        eligible_purchase_count: 0,
-        roundup_opportunity: 0,
-        average_roundup: 0,
-        smallest_roundup: 0,
-        largest_roundup: 0,
-      };
-
-    return res.json({
-      status: 'ok',
-
-      /*
-       * Explicit data-state information prevents the frontend
-       * from confusing "no data" with "failed to load data."
-       */
-      data_state: {
-        accounts_available: accountsResult.rows.length > 0,
-        transactions_available:
-          Number(transactionState.transaction_count) > 0,
-        roundup_available:
-          Number(roundupState.eligible_purchase_count) > 0,
-      },
-
-      accounts: accountsResult.rows,
-
-      transaction_state: transactionState,
-
-      roundup: roundupState,
-
-      roundup_by_category:
-        roundupCategoryResult.rows,
-
-      roundup_by_merchant:
-        roundupMerchantResult.rows,
-
-      recent_roundups:
-        recentRoundupsResult.rows,
-    });
-  } catch (err) {
-    console.error('Get dashboard failed:', err);
-
-    return res.status(500).json({
-      status: 'error',
-      message: 'Unable to load your financial dashboard',
-    });
+);
+
+app.post(
+  '/plaid/create-update-link-token',
+  requireAuth,
+  async (req, res) => {
+    try {
+      const {
+        plaid_item_id,
+      } = req.body;
+
+      if (!plaid_item_id) {
+        return res.status(400).json({
+          status: 'error',
+          message:
+            'plaid_item_id is required',
+        });
+      }
+
+      const itemRow =
+        await pool.query(
+          `
+            SELECT
+              id,
+              plaid_access_token_encrypted
+            FROM plaid_items
+            WHERE plaid_item_id = $1
+              AND user_id = $2
+            LIMIT 1
+          `,
+          [
+            plaid_item_id,
+            req.user.id,
+          ]
+        );
+
+      if (itemRow.rows.length === 0) {
+        return res.status(404).json({
+          status: 'error',
+          message:
+            'Item not found for this user',
+        });
+      }
+
+      const accessToken =
+        decrypt(
+          itemRow.rows[0]
+            .plaid_access_token_encrypted
+        );
+
+      const response =
+        await plaidClient.linkTokenCreate({
+          user: {
+            client_user_id:
+              req.user.id,
+          },
+          client_name: 'iBag',
+          access_token:
+            accessToken,
+          additional_consented_products: [
+            'liabilities',
+            'investments',
+            'identity',
+          ],
+          country_codes: ['US'],
+          language: 'en',
+        });
+
+      return res.json({
+        status: 'ok',
+        link_token:
+          response.data.link_token,
+      });
+    } catch (err) {
+      console.error(
+        'Plaid update link token failed:',
+        err
+      );
+
+      return res.status(500).json({
+        status: 'error',
+        detail:
+          err.response?.data ||
+          err.message,
+      });
+    }
   }
-}
+);
 
+app.post(
+  '/plaid/exchange-public-token',
+  requireAuth,
+  async (req, res) => {
+    try {
+      const {
+        public_token,
+        institution_name,
+      } = req.body;
 
-/**
- * Existing financial summary.
+      if (!public_token) {
+        return res.status(400).json({
+          status: 'error',
+          message:
+            'public_token is required',
+        });
+      }
+
+      const exchangeRes =
+        await plaidClient.itemPublicTokenExchange({
+          public_token,
+        });
+
+      const access_token =
+        exchangeRes.data.access_token;
+
+      const plaid_item_id =
+        exchangeRes.data.item_id;
+
+      const encryptedToken =
+        encrypt(access_token);
+
+      const itemInsert =
+        await pool.query(
+          `
+            INSERT INTO plaid_items
+            (
+              user_id,
+              plaid_item_id,
+              plaid_access_token_encrypted,
+              institution_name
+            )
+            VALUES
+            ($1, $2, $3, $4)
+            RETURNING id
+          `,
+          [
+            req.user.id,
+            plaid_item_id,
+            encryptedToken,
+            institution_name || null,
+          ]
+        );
+
+      const plaidItemDbId =
+        itemInsert.rows[0].id;
+
+      const accountsRes =
+        await plaidClient.accountsGet({
+          access_token,
+        });
+
+      for (
+        const acct of
+        accountsRes.data.accounts
+      ) {
+        await pool.query(
+          `
+            INSERT INTO accounts
+            (
+              plaid_item_id,
+              plaid_account_id,
+              name,
+              type,
+              subtype,
+              mask,
+              current_balance,
+              available_balance,
+              balance_iso_currency_code,
+              balance_updated_at
+            )
+            VALUES
+            (
+              $1,$2,$3,$4,$5,$6,$7,$8,$9,now()
+            )
+            ON CONFLICT (plaid_account_id)
+            DO UPDATE SET
+              name = EXCLUDED.name,
+              type = EXCLUDED.type,
+              subtype = EXCLUDED.subtype,
+              mask = EXCLUDED.mask,
+              current_balance =
+                EXCLUDED.current_balance,
+              available_balance =
+                EXCLUDED.available_balance,
+              balance_iso_currency_code =
+                EXCLUDED.balance_iso_currency_code,
+              balance_updated_at = now()
+          `,
+          [
+            plaidItemDbId,
+            acct.account_id,
+            acct.name,
+            acct.type,
+            acct.subtype,
+            acct.mask,
+            acct.balances?.current ?? null,
+            acct.balances?.available ?? null,
+            acct.balances?.iso_currency_code ||
+              'USD',
+          ]
+        );
+      }
+
+      let immediateSyncResult = null;
+
+      try {
+        const freshItem =
+          await pool.query(
+            `
+              SELECT
+                id,
+                plaid_item_id,
+                plaid_access_token_encrypted,
+                cursor
+              FROM plaid_items
+              WHERE id = $1
+            `,
+            [plaidItemDbId]
+          );
+
+        if (freshItem.rows.length > 0) {
+          immediateSyncResult =
+            await syncOneItem(
+              freshItem.rows[0]
+            );
+        }
+      } catch (syncErr) {
+        console.error(
+          'Immediate post-link sync failed (non-fatal):',
+          syncErr.message
+        );
+      }
+
+      return res.json({
+        status: 'ok',
+        plaid_item_id,
+        accounts_stored:
+          accountsRes.data.accounts.length,
+        immediate_sync:
+          immediateSyncResult,
+      });
+    } catch (err) {
+      console.error(
+        'Plaid public token exchange failed:',
+        err
+      );
+
+      return res.status(500).json({
+        status: 'error',
+        detail:
+          err.response?.data ||
+          err.message,
+      });
+    }
+  }
+);
+
+app.post(
+  '/plaid/resync-after-update',
+  requireAuth,
+  async (req, res) => {
+    try {
+      const {
+        plaid_item_id,
+      } = req.body;
+
+      if (!plaid_item_id) {
+        return res.status(400).json({
+          status: 'error',
+          message:
+            'plaid_item_id is required',
+        });
+      }
+
+      const itemRow =
+        await pool.query(
+          `
+            SELECT
+              id,
+              plaid_item_id,
+              plaid_access_token_encrypted,
+              cursor
+            FROM plaid_items
+            WHERE plaid_item_id = $1
+              AND user_id = $2
+            LIMIT 1
+          `,
+          [
+            plaid_item_id,
+            req.user.id,
+          ]
+        );
+
+      if (itemRow.rows.length === 0) {
+        return res.status(404).json({
+          status: 'error',
+          message:
+            'Item not found for this user',
+        });
+      }
+
+      const result =
+        await syncOneItem(
+          itemRow.rows[0]
+        );
+
+      return res.json({
+        status: 'ok',
+        result,
+      });
+    } catch (err) {
+      console.error(
+        'Plaid resync failed:',
+        err
+      );
+
+      return res.status(500).json({
+        status: 'error',
+        message: err.message,
+      });
+    }
+  }
+);
+
+/*
+ * INTERNAL SYNCHRONIZATION
  */
-async function getSummary(req, res) {
-  try {
-    const result = await pool.query(
-      `
-        SELECT
-          COUNT(*)::int AS transaction_count,
-          COALESCE(SUM(amount), 0) AS transaction_total
-        FROM transactions t
-        INNER JOIN accounts a
-          ON a.id = t.account_id
-        INNER JOIN plaid_items p
-          ON p.id = a.plaid_item_id
-        WHERE p.user_id = $1
-          AND p.status = 'active'
-          AND t.status = 'active'
-      `,
-      [req.user.id]
+
+app.post(
+  '/internal/sync/run',
+  requireInternalSecret,
+  runSync
+);
+
+/*
+ * 404
+ */
+
+app.use((req, res) => {
+  res.status(404).json({
+    status: 'error',
+    message: 'Not found',
+  });
+});
+
+/*
+ * GLOBAL ERROR HANDLER
+ */
+
+app.use(
+  (err, req, res, next) => {
+    console.error(
+      'Unhandled error:',
+      err
     );
 
-    return res.json({
-      status: 'ok',
-      summary: result.rows[0],
-    });
-  } catch (err) {
-    console.error('Get summary failed:', err);
-
-    return res.status(500).json({
+    res.status(500).json({
       status: 'error',
-      message: 'Unable to load your financial summary',
-    });
-  }
-}
-
-
-/**
- * Connected financial accounts.
- */
-async function getAccounts(req, res) {
-  try {
-    const result = await pool.query(
-      `
-        SELECT
-          a.id,
-          a.plaid_account_id,
-          a.name,
-          a.official_name,
-          a.mask,
-          a.type,
-          a.subtype,
-          a.current_balance,
-          a.available_balance,
-          a.balance_iso_currency_code,
-          a.balance_updated_at,
-          p.institution_name,
-          p.plaid_item_id
-        FROM accounts a
-        INNER JOIN plaid_items p
-          ON p.id = a.plaid_item_id
-        WHERE p.user_id = $1
-          AND p.status = 'active'
-        ORDER BY a.created_at ASC
-      `,
-      [req.user.id]
-    );
-
-    return res.json({
-      status: 'ok',
-      accounts: result.rows,
-    });
-  } catch (err) {
-    console.error('Get accounts failed:', err);
-
-    return res.status(500).json({
-      status: 'error',
-      message: 'Unable to load your accounts',
-    });
-  }
-}
-
-
-/**
- * Real transactions belonging to the authenticated user.
- */
-async function getTransactions(req, res) {
-  try {
-    const result = await pool.query(
-      `
-        SELECT
-          t.id,
-          t.account_id,
-          t.plaid_transaction_id,
-          t.amount,
-          t.iso_currency_code,
-          t.merchant_name,
-          t.category,
-          t.pending,
-          t.authorized_date,
-          t.posted_date,
-          t.status
-        FROM transactions t
-        INNER JOIN accounts a
-          ON a.id = t.account_id
-        INNER JOIN plaid_items p
-          ON p.id = a.plaid_item_id
-        WHERE p.user_id = $1
-          AND p.status = 'active'
-          AND t.status = 'active'
-        ORDER BY
-          COALESCE(
-            t.posted_date,
-            t.authorized_date
-          ) DESC NULLS LAST,
-          t.created_at DESC
-      `,
-      [req.user.id]
-    );
-
-    return res.json({
-      status: 'ok',
-      transactions: result.rows,
-    });
-  } catch (err) {
-    console.error('Get transactions failed:', err);
-
-    return res.status(500).json({
-      status: 'error',
-      message: 'Unable to load your transactions',
-    });
-  }
-}
-
-
-/**
- * Insights remain evidence-gated.
- *
- * No insight is fabricated until the intelligence engine
- * produces qualifying evidence.
- */
-async function getInsights(req, res) {
-  try {
-    return res.json({
-      status: 'ok',
-      insights: [],
-    });
-  } catch (err) {
-    console.error('Get insights failed:', err);
-
-    return res.status(500).json({
-      status: 'error',
-      message: 'Unable to load your insights',
-    });
-  }
-}
-
-
-/**
- * Net worth.
- *
- * This name is retained for compatibility, but the underlying
- * value is the sum of connected account current balances.
- */
-async function getNetWorth(req, res) {
-  try {
-    const result = await pool.query(
-      `
-        SELECT
-          COALESCE(
-            SUM(a.current_balance),
-            0
-          ) AS net_worth
-        FROM accounts a
-        INNER JOIN plaid_items p
-          ON p.id = a.plaid_item_id
-        WHERE p.user_id = $1
-          AND p.status = 'active'
-      `,
-      [req.user.id]
-    );
-
-    return res.json({
-      status: 'ok',
-      net_worth: result.rows[0].net_worth,
-    });
-  } catch (err) {
-    console.error('Get net worth failed:', err);
-
-    return res.status(500).json({
-      status: 'error',
-      message: 'Unable to load your net worth',
-    });
-  }
-}
-
-
-/**
- * Income remains unavailable until a real income-analysis
- * data path exists.
- */
-async function getIncome(req, res) {
-  try {
-    return res.json({
-      status: 'ok',
-      income: null,
       message:
-        'Income analysis requires qualifying connected financial data.',
-    });
-  } catch (err) {
-    console.error('Get income failed:', err);
-
-    return res.status(500).json({
-      status: 'error',
-      message: 'Unable to load your income',
+        'Internal server error',
     });
   }
-}
+);
 
-
-/**
- * Cash flow remains unavailable until the corresponding
- * real analysis path exists.
+/*
+ * SERVER
  */
-async function getCashFlow(req, res) {
-  try {
-    return res.json({
-      status: 'ok',
-      cash_flow: null,
-      message:
-        'Cash-flow analysis requires qualifying connected financial data.',
-    });
-  } catch (err) {
-    console.error('Get cash flow failed:', err);
 
-    return res.status(500).json({
-      status: 'error',
-      message: 'Unable to load your cash flow',
-    });
-  }
-}
+const PORT =
+  process.env.PORT || 3000;
 
-
-module.exports = {
-  getMe,
-  getDashboard,
-  getSummary,
-  getAccounts,
-  getTransactions,
-  getInsights,
-  getNetWorth,
-  getIncome,
-  getCashFlow,
-};
+app.listen(PORT, () => {
+  console.log(
+    `shave-api listening on port ${PORT}`
+  );
+});
