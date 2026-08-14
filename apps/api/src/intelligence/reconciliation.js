@@ -22,7 +22,7 @@ function sum(values) {
   );
 }
 
-function reconcileRoundup({
+function reconcileRoundupAggregate({
   events,
   globalCount,
   globalOpportunity,
@@ -135,7 +135,7 @@ function reconcileRoundup({
 }
 
 module.exports = {
-  reconcileRoundup,
+  reconcileRoundupAggregate,
   roundMoney,
   approximatelyEqual,
   sum,
