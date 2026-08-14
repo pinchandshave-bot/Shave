@@ -176,6 +176,29 @@ const app =
 
 /*
  * --------------------------------------------------------------------------
+ * TRUST PROXY
+ * --------------------------------------------------------------------------
+ *
+ * iBag is deployed behind Render's reverse proxy.
+ *
+ * Render forwards the original client address through
+ * X-Forwarded-For. Express must therefore trust the first
+ * proxy hop so middleware such as express-rate-limit can
+ * correctly determine the originating client.
+ *
+ * This MUST be configured before rate-limit middleware is
+ * created/used.
+ * --------------------------------------------------------------------------
+ */
+
+app.set(
+  'trust proxy',
+  1
+);
+
+
+/*
+ * --------------------------------------------------------------------------
  * CORS
  * --------------------------------------------------------------------------
  */
@@ -254,6 +277,7 @@ const authLimiter =
 
     message: {
       status: 'error',
+
       message:
         'Too many attempts. Try again later.',
     },
@@ -1242,6 +1266,11 @@ app.listen(
   () => {
     console.log(
       `iBag API listening on port ${PORT}`
+    );
+
+    console.log(
+      'Express trust proxy:',
+      app.get('trust proxy')
     );
   }
 );
