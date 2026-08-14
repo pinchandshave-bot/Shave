@@ -4,30 +4,10 @@ const {
   classifyTransaction,
 } = require('./classification');
 
-function numberValue(value) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : 0;
-}
 
-function round(value) {
-  return Number(
-    numberValue(value).toFixed(2)
-  );
-}
-
-function dateOnly(value) {
-  if (!value) return null;
-
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return null;
-  }
-
-  return date.toISOString().slice(0, 10);
-}
-
-function computeCashFlow(transactions) {
+function computeCashFlowIntelligence(
+  transactions
+) {
   const posted =
     transactions.filter(
       transaction =>
@@ -37,7 +17,15 @@ function computeCashFlow(transactions) {
 
   if (!posted.length) {
     return {
-      evidence_state: 'insufficient_evidence',
+      evidence_state:
+        'insufficient_evidence',
+
+      observation_days: 0,
+
+      earliest_date: null,
+      latest_date: null,
+
+      transaction_count: 0,
 
       gross_movement: {
         inflow: 0,
@@ -57,10 +45,68 @@ function computeCashFlow(transactions) {
         net: 0,
       },
 
+      daily_economic_inflow: null,
+      daily_economic_outflow: null,
+      daily_economic_net_change: null,
+
       classified_transaction_count: 0,
       unknown_transaction_count: 0,
+
+      classification_coverage: 0,
+
+      direction: 'unknown',
     };
   }
+
+
+  /* --------------------------------------------------------------------------
+   * OBSERVATION WINDOW
+   * ------------------------------------------------------------------------ */
+
+  const timestamps =
+    posted
+      .map(
+        transaction =>
+          new Date(
+            transaction.posted_date
+          ).getTime()
+      )
+      .filter(Number.isFinite)
+      .sort(
+        (a, b) => a - b
+      );
+
+  const earliest =
+    timestamps.length
+      ? new Date(timestamps[0])
+      : null;
+
+  const latest =
+    timestamps.length
+      ? new Date(
+          timestamps[
+            timestamps.length - 1
+          ]
+        )
+      : null;
+
+  const observationDays =
+    earliest && latest
+      ? Math.max(
+          1,
+          Math.ceil(
+            (
+              latest.getTime() -
+              earliest.getTime()
+            ) / 86400000
+          )
+        )
+      : 1;
+
+
+  /* --------------------------------------------------------------------------
+   * AGGREGATES
+   * ------------------------------------------------------------------------ */
 
   let grossInflow = 0;
   let grossOutflow = 0;
@@ -74,15 +120,27 @@ function computeCashFlow(transactions) {
   let classifiedCount = 0;
   let unknownCount = 0;
 
+
+  /* --------------------------------------------------------------------------
+   * CLASSIFICATION-AWARE PROCESSING
+   * ------------------------------------------------------------------------ */
+
   for (const transaction of posted) {
     const amount =
-      numberValue(transaction.amount);
+      Number(transaction.amount);
+
+    if (!Number.isFinite(amount)) {
+      unknownCount += 1;
+      continue;
+    }
 
     const absolute =
       Math.abs(amount);
 
+
     /*
-     * Gross account movement preserves everything.
+     * Gross movement preserves the
+     * account-level reality.
      */
     if (amount < 0) {
       grossInflow += absolute;
@@ -90,119 +148,137 @@ function computeCashFlow(transactions) {
       grossOutflow += absolute;
     }
 
+
     const classification =
-      classifyTransaction(transaction);
+      classifyTransaction(
+        transaction
+      );
+
 
     if (
-      classification.classification ===
-      CLASSIFICATIONS.UNKNOWN
+      classification.type ===
+        CLASSIFICATIONS.UNKNOWN
     ) {
       unknownCount += 1;
     } else {
       classifiedCount += 1;
     }
 
+
+    /*
+     * Transfers are account movement,
+     * not economic cash flow.
+     */
     if (
-      classification.classification ===
+      classification.type ===
       CLASSIFICATIONS.TRANSFER_IN
     ) {
       transferIn += absolute;
       continue;
     }
 
+
     if (
-      classification.classification ===
+      classification.type ===
       CLASSIFICATIONS.TRANSFER_OUT
     ) {
       transferOut += absolute;
       continue;
     }
 
+
     /*
      * Economic inflow.
      */
     if (
       classification.economic_role ===
-      ECONOMIC_ROLES.INCOME
+      ECONOMIC_ROLES.ECONOMIC_INFLOW
     ) {
       economicInflow += absolute;
       continue;
     }
 
-    /*
-     * Refunds increase economic cash flow.
-     */
-    if (
-      classification.economic_role ===
-      ECONOMIC_ROLES.REFUND
-    ) {
-      economicInflow += absolute;
-      continue;
-    }
 
     /*
      * Economic outflow.
      */
     if (
       classification.economic_role ===
-        ECONOMIC_ROLES.SPENDING ||
-      classification.economic_role ===
-        ECONOMIC_ROLES.FEE ||
-      classification.economic_role ===
-        ECONOMIC_ROLES.LOAN_PAYMENT ||
-      classification.economic_role ===
-        ECONOMIC_ROLES.WITHDRAWAL
+      ECONOMIC_ROLES.ECONOMIC_OUTFLOW
     ) {
       economicOutflow += absolute;
+      continue;
+    }
+
+    /*
+     * ACCOUNT_MOVEMENT_ONLY and UNKNOWN
+     * do not enter economic cash flow.
+     */
+  }
+
+
+  /* --------------------------------------------------------------------------
+   * ECONOMIC EVIDENCE
+   * ------------------------------------------------------------------------ */
+
+  const coverage =
+    posted.length > 0
+      ? classifiedCount /
+        posted.length
+      : 0;
+
+  const economicSupported =
+    coverage >= 0.75 &&
+    classifiedCount >= 3;
+
+
+  const grossNet =
+    grossInflow -
+    grossOutflow;
+
+  const economicNet =
+    economicInflow -
+    economicOutflow;
+
+
+  const dailyEconomicInflow =
+    economicSupported
+      ? economicInflow /
+        observationDays
+      : null;
+
+  const dailyEconomicOutflow =
+    economicSupported
+      ? economicOutflow /
+        observationDays
+      : null;
+
+  const dailyEconomicNet =
+    economicSupported
+      ? economicNet /
+        observationDays
+      : null;
+
+
+  let direction =
+    'unknown';
+
+  if (
+    economicSupported
+  ) {
+    if (
+      dailyEconomicNet > 0.01
+    ) {
+      direction = 'positive';
+    } else if (
+      dailyEconomicNet < -0.01
+    ) {
+      direction = 'negative';
+    } else {
+      direction = 'stable';
     }
   }
 
-  const grossNet =
-    grossInflow - grossOutflow;
-
-  const economicNet =
-    economicInflow - economicOutflow;
-
-  const dates =
-    posted
-      .map(t => new Date(t.posted_date).getTime())
-      .filter(Number.isFinite)
-      .sort((a, b) => a - b);
-
-  const earliest =
-    dates.length
-      ? new Date(dates[0])
-      : null;
-
-  const latest =
-    dates.length
-      ? new Date(dates[dates.length - 1])
-      : null;
-
-  const observationDays =
-    earliest && latest
-      ? Math.max(
-          1,
-          Math.ceil(
-            (latest.getTime() -
-              earliest.getTime()) /
-              86400000
-          )
-        )
-      : 1;
-
-  const coverageRatio =
-    posted.length > 0
-      ? classifiedCount / posted.length
-      : 0;
-
-  /*
-   * Economic cash flow is only authoritative when
-   * enough transactions are classified.
-   */
-  const economicSupported =
-    coverageRatio >= 0.75 &&
-    classifiedCount >= 3;
 
   return {
     evidence_state:
@@ -219,11 +295,21 @@ function computeCashFlow(transactions) {
     latest_date:
       dateOnly(latest),
 
+    transaction_count:
+      posted.length,
+
+
     gross_movement: {
-      inflow: round(grossInflow),
-      outflow: round(grossOutflow),
-      net_change: round(grossNet),
+      inflow:
+        round(grossInflow),
+
+      outflow:
+        round(grossOutflow),
+
+      net_change:
+        round(grossNet),
     },
+
 
     economic_cash_flow: {
       inflow:
@@ -242,13 +328,43 @@ function computeCashFlow(transactions) {
           : null,
     },
 
+
     transfers: {
-      inflow: round(transferIn),
-      outflow: round(transferOut),
-      net: round(
-        transferIn - transferOut
-      ),
+      inflow:
+        round(transferIn),
+
+      outflow:
+        round(transferOut),
+
+      net:
+        round(
+          transferIn -
+          transferOut
+        ),
     },
+
+
+    daily_economic_inflow:
+      dailyEconomicInflow === null
+        ? null
+        : round(
+            dailyEconomicInflow
+          ),
+
+    daily_economic_outflow:
+      dailyEconomicOutflow === null
+        ? null
+        : round(
+            dailyEconomicOutflow
+          ),
+
+    daily_economic_net_change:
+      dailyEconomicNet === null
+        ? null
+        : round(
+            dailyEconomicNet
+          ),
+
 
     classified_transaction_count:
       classifiedCount,
@@ -258,11 +374,9 @@ function computeCashFlow(transactions) {
 
     classification_coverage:
       Number(
-        coverageRatio.toFixed(4)
+        coverage.toFixed(4)
       ),
+
+    direction,
   };
 }
-
-module.exports = {
-  computeCashFlow,
-};
