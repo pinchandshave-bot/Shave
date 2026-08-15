@@ -29,31 +29,20 @@ const MAX_PAGINATION_RESTARTS = 3;
  * IBAG PLAID DOMAIN CONTRACT
  * --------------------------------------------------------------------------
  *
- * iBag never treats a requested Plaid product as observed financial data.
- *
- * Product state is determined from the actual Plaid Item.
- *
- * Important distinctions:
+ * iBag distinguishes:
  *
  * requested
- *   The application requested the capability.
- *
  * initialized
- *   Plaid reports the product as initialized on the Item.
- *
  * available
- *   Plaid reports the product as available for the Item.
- *
  * consented
- *   The user has consented to the applicable product scope.
- *
  * observed
- *   An endpoint was successfully called and returned real data.
+ * unavailable
+ * observation_failed
  *
- * unsupported / unavailable
- *   iBag does not have usable access to that domain for this Item.
+ * Capability is never treated as financial data.
  *
- * No state below creates financial data.
+ * Phase 1 is read-only intelligence.
+ * No money movement occurs anywhere in this file.
  */
 
 const DOMAIN_PRODUCTS = Object.freeze({
@@ -84,15 +73,6 @@ const DOMAIN_PRODUCTS = Object.freeze({
   ],
 });
 
-/*
- * Balance is deliberately not included above as a normal product gate.
- *
- * Plaid exposes account balances through accountsBalanceGet().
- *
- * Balance may be billed differently from Item products and should not be
- * treated as equivalent to the product arrays returned by Item Get.
- */
-
 const DOMAIN_ENDPOINTS = Object.freeze({
   transactions: 'transactionsSync',
   auth: 'authGet',
@@ -112,7 +92,6 @@ const DOMAIN_ENDPOINTS = Object.freeze({
 function getPlaidErrorCode(error) {
   return (
     error?.response?.data?.error_code ||
-    error?.response?.data?.error_code ||
     null
   );
 }
@@ -127,29 +106,22 @@ function getPlaidErrorMessage(error) {
 }
 
 function isCapabilityError(error) {
-  const code = getPlaidErrorCode(error);
-
-  /*
-   * We deliberately do not maintain a huge guessed list of Plaid error
-   * codes here.
-   *
-   * Capability state is primarily determined by Item Get.
-   *
-   * This helper is used only to classify a domain failure as non-fatal
-   * to the remainder of the Item synchronization.
-   */
-  return Boolean(code);
+  return Boolean(
+    getPlaidErrorCode(error)
+  );
 }
 
 function uniqueStrings(values) {
   return [
     ...new Set(
-      (Array.isArray(values) ? values : [])
-        .filter(
-          value =>
-            typeof value === 'string' &&
-            value.length > 0
-        )
+      (Array.isArray(values)
+        ? values
+        : []
+      ).filter(
+        value =>
+          typeof value === 'string' &&
+          value.length > 0
+      )
     ),
   ];
 }
@@ -179,7 +151,9 @@ async function discoverItemCapabilities(
     {};
 
   const products =
-    uniqueStrings(item.products);
+    uniqueStrings(
+      item.products
+    );
 
   const billedProducts =
     uniqueStrings(
@@ -196,7 +170,7 @@ async function discoverItemCapabilities(
       item.consented_products
     );
 
-  const requestedProducts =
+  const requestedOrPresentProducts =
     uniqueStrings([
       ...products,
       ...billedProducts,
@@ -248,7 +222,8 @@ async function discoverItemCapabilities(
           )
       );
 
-    let state = 'not_available';
+    let state =
+      'not_available';
 
     if (initialized) {
       state = 'initialized';
@@ -270,8 +245,7 @@ async function discoverItemCapabilities(
   }
 
   /*
-   * Balance is an operational account-data capability, not a normal
-   * product gate.
+   * Balance is not represented as a normal Item product.
    */
   domains.balance = {
     products: [],
@@ -301,15 +275,18 @@ async function discoverItemCapabilities(
       null,
 
     products,
+
     billed_products:
       billedProducts,
+
     available_products:
       availableProducts,
+
     consented_products:
       consentedProducts,
 
     requested_or_present_products:
-      requestedProducts,
+      requestedOrPresentProducts,
 
     domains,
   };
@@ -320,12 +297,13 @@ async function discoverItemCapabilities(
  * TRANSACTION PAGINATION
  * --------------------------------------------------------------------------
  *
- * Plaid /transactions/sync is cursor based.
+ * Plaid requires the original cursor to be preserved while paginating.
  *
- * We consume every page before returning the complete delta.
+ * If Plaid reports:
  *
- * If Plaid reports that the transaction set changed while pagination was
- * occurring, restart from the original cursor.
+ * TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION
+ *
+ * the complete pagination process restarts from the original cursor.
  */
 
 async function fetchTransactionUpdates(
@@ -351,8 +329,13 @@ async function fetchTransactionUpdates(
       while (hasMore) {
         const response =
           await plaidClient.transactionsSync({
-            access_token: accessToken,
-            cursor,
+            access_token:
+              accessToken,
+
+            ...(cursor
+              ? { cursor }
+              : {}),
+
             count: 500,
           });
 
@@ -384,7 +367,8 @@ async function fetchTransactionUpdates(
         added,
         modified,
         removed,
-        nextCursor: cursor,
+        nextCursor:
+          cursor || null,
       };
     } catch (err) {
       const code =
@@ -402,9 +386,11 @@ async function fetchTransactionUpdates(
       restartCount += 1;
 
       console.warn(
-        `Transactions pagination changed during sync. ` +
-          `Restarting from original cursor. ` +
-          `Attempt ${restartCount}/${MAX_PAGINATION_RESTARTS}.`
+        [
+          'Transactions pagination changed during sync.',
+          'Restarting from original cursor.',
+          `Attempt ${restartCount}/${MAX_PAGINATION_RESTARTS}.`,
+        ].join(' ')
       );
     }
   }
@@ -414,12 +400,6 @@ async function fetchTransactionUpdates(
  * --------------------------------------------------------------------------
  * ROUND-UP RECONCILIATION
  * --------------------------------------------------------------------------
- *
- * Round-Ups are analytical/intelligence records only.
- *
- * NO MONEY MOVEMENT OCCURS HERE.
- *
- * Pending transactions are not authoritative Round-Up events.
  */
 
 async function reconcileRoundup(
@@ -452,13 +432,20 @@ async function reconcileRoundup(
     !transactionResult.rows.length
   ) {
     throw new Error(
-      `Transaction ${transactionId} not found during Round-Up reconciliation`
+      [
+        'Transaction',
+        transactionId,
+        'not found during Round-Up reconciliation',
+      ].join(' ')
     );
   }
 
   const transaction =
     transactionResult.rows[0];
 
+  /*
+   * Pending transactions are not authoritative Round-Up events.
+   */
   if (
     transaction.pending === true
   ) {
@@ -494,7 +481,9 @@ async function reconcileRoundup(
       transaction
     );
 
-  if (evaluation.eligible) {
+  if (
+    evaluation.eligible
+  ) {
     const roundupAmount =
       calculateRoundup(
         transaction
@@ -554,7 +543,9 @@ async function reconcileRoundup(
         userId,
         transactionId,
         roundupAmount,
-        Number(transaction.amount),
+        Number(
+          transaction.amount
+        ),
         evaluation.reason,
         RULE_VERSION,
       ]
@@ -582,7 +573,9 @@ async function reconcileRoundup(
       WHERE transaction_id = $4
     `,
     [
-      Number(transaction.amount),
+      Number(
+        transaction.amount
+      ),
       evaluation.reason,
       RULE_VERSION,
       transactionId,
@@ -628,7 +621,9 @@ async function findPendingReplacement(
       ]
     );
 
-  if (!result.rows.length) {
+  if (
+    !result.rows.length
+  ) {
     return null;
   }
 
@@ -646,14 +641,18 @@ async function upsertTransaction(
   txn,
   accountId
 ) {
-  if (!txn.pending) {
+  if (
+    !txn.pending
+  ) {
     const pendingLocalId =
       await findPendingReplacement(
         client,
         txn
       );
 
-    if (pendingLocalId) {
+    if (
+      pendingLocalId
+    ) {
       const result =
         await client.query(
           `
@@ -683,7 +682,8 @@ async function upsertTransaction(
               'USD',
             txn.merchant_name ||
               null,
-            txn.personal_finance_category
+            txn
+              .personal_finance_category
               ?.primary ||
               null,
             txn.authorized_date ||
@@ -784,10 +784,13 @@ async function upsertTransaction(
           'USD',
         txn.merchant_name ||
           null,
-        txn.personal_finance_category
+        txn
+          .personal_finance_category
           ?.primary ||
           null,
-        Boolean(txn.pending),
+        Boolean(
+          txn.pending
+        ),
         txn.authorized_date ||
           null,
         txn.date ||
@@ -824,7 +827,9 @@ async function markTransactionRemoved(
       ]
     );
 
-  if (!result.rows.length) {
+  if (
+    !result.rows.length
+  ) {
     return false;
   }
 
@@ -865,11 +870,19 @@ async function markTransactionRemoved(
  * BALANCE SYNCHRONIZATION
  * --------------------------------------------------------------------------
  *
- * Balance is real account state.
+ * IMPORTANT:
  *
- * We only update accounts that can be matched to the current Plaid Item.
+ * The actual accounts schema supplied for this project does NOT contain
+ * accounts.updated_at.
  *
- * We never create accounts from an unmatched balance response.
+ * Therefore this query intentionally updates only real columns:
+ *
+ * current_balance
+ * available_balance
+ * balance_iso_currency_code
+ * balance_updated_at
+ *
+ * No account is created from an unmatched Plaid balance response.
  */
 
 async function syncBalances(
@@ -879,7 +892,8 @@ async function syncBalances(
 ) {
   const response =
     await plaidClient.accountsBalanceGet({
-      access_token: accessToken,
+      access_token:
+        accessToken,
     });
 
   const accounts =
@@ -901,8 +915,7 @@ async function syncBalances(
             current_balance = $1,
             available_balance = $2,
             balance_iso_currency_code = $3,
-            balance_updated_at = now(),
-            updated_at = now()
+            balance_updated_at = now()
           WHERE plaid_item_id = $4
             AND plaid_account_id = $5
           RETURNING id
@@ -924,15 +937,11 @@ async function syncBalances(
         ]
       );
 
-    if (result.rows.length) {
+    if (
+      result.rows.length
+    ) {
       updated += 1;
     } else {
-      /*
-       * Do not manufacture an account.
-       *
-       * Account synchronization belongs to the Item/account initialization
-       * lifecycle.
-       */
       unmatched += 1;
     }
   }
@@ -950,13 +959,6 @@ async function syncBalances(
  * --------------------------------------------------------------------------
  * GENERIC DOMAIN OBSERVATION
  * --------------------------------------------------------------------------
- *
- * These calls deliberately do not invent persistence tables.
- *
- * The returned real Plaid response is available to the orchestration result.
- *
- * Domain-specific persistence will be added only against the actual
- * production schema for each domain.
  */
 
 async function observeDomain(
@@ -1029,31 +1031,17 @@ async function observeDomain(
           );
         break;
 
-      /*
-       * Recurring Transactions is deliberately not guessed here.
-       *
-       * Plaid documents this as /transactions/recurring/get and describes
-       * it as an add-on to Transactions. The current plaidClient contract
-       * supplied to this application does not expose that endpoint.
-       *
-       * Therefore we report the capability but do not invent an API call.
-       */
       case 'recurring_transactions':
         return {
           domain,
-          state: 'capability_detected_endpoint_not_configured',
+          state:
+            'capability_detected_endpoint_not_configured',
           observed: false,
           observations: 0,
           endpoint:
             'transactionsRecurringGet',
         };
 
-      /*
-       * Assets uses the Asset Report lifecycle and therefore is not a
-       * simple account-domain GET operation.
-       *
-       * Do not manufacture an observation here.
-       */
       case 'assets':
         return {
           domain,
@@ -1065,11 +1053,6 @@ async function observeDomain(
             'assetReportCreate/assetReportGet',
         };
 
-      /*
-       * Income has current Plaid Credit / income-verification workflows.
-       *
-       * The application deliberately does not invent incomeGet().
-       */
       case 'income':
         return {
           domain,
@@ -1094,22 +1077,27 @@ async function observeDomain(
       domain,
       state: 'observed',
       observed: true,
-      observations: countDomainObservations(
-        domain,
-        data
-      ),
+      observations:
+        countDomainObservations(
+          domain,
+          data
+        ),
       data,
     };
   } catch (err) {
     return {
       domain,
-      state: isCapabilityError(err)
-        ? 'observation_failed'
-        : 'error',
+      state:
+        isCapabilityError(err)
+          ? 'observation_failed'
+          : 'error',
+
       observed: false,
       observations: 0,
+
       error_code:
         getPlaidErrorCode(err),
+
       error_message:
         getPlaidErrorMessage(err),
     };
@@ -1120,10 +1108,6 @@ async function observeDomain(
  * --------------------------------------------------------------------------
  * OBSERVATION COUNTING
  * --------------------------------------------------------------------------
- *
- * This is metadata only.
- *
- * It is deliberately conservative.
  */
 
 function countDomainObservations(
@@ -1179,6 +1163,11 @@ function countDomainObservations(
  * --------------------------------------------------------------------------
  * DOMAIN ORCHESTRATION
  * --------------------------------------------------------------------------
+ *
+ * SAVEPOINTS ARE CRITICAL.
+ *
+ * A non-transaction domain failure must not poison the PostgreSQL
+ * transaction that contains successful transaction synchronization.
  */
 
 async function synchronizeDomains(
@@ -1190,8 +1179,13 @@ async function synchronizeDomains(
   const domains = {};
 
   /*
-   * Balance is operational and independently synchronized.
+   * BALANCE
    */
+
+  await client.query(
+    'SAVEPOINT balance_observation'
+  );
+
   try {
     domains.balance =
       await syncBalances(
@@ -1199,24 +1193,39 @@ async function synchronizeDomains(
         accessToken,
         itemId
       );
+
+    await client.query(
+      'RELEASE SAVEPOINT balance_observation'
+    );
   } catch (err) {
+    await client.query(
+      'ROLLBACK TO SAVEPOINT balance_observation'
+    );
+
+    await client.query(
+      'RELEASE SAVEPOINT balance_observation'
+    );
+
     domains.balance = {
-      state: 'observation_failed',
+      state:
+        'observation_failed',
+
       observed: false,
+
       observations: 0,
+
       error_code:
         getPlaidErrorCode(err),
+
       error_message:
         getPlaidErrorMessage(err),
     };
   }
 
   /*
-   * These domains are observed independently.
-   *
-   * Failure in one does not invalidate transactions or another successful
-   * domain.
+   * OTHER DOMAINS
    */
+
   const observationDomains = [
     'auth',
     'identity',
@@ -1232,14 +1241,49 @@ async function synchronizeDomains(
     const domain
     of observationDomains
   ) {
-    domains[domain] =
-      await observeDomain(
-        domain,
-        accessToken,
-        capabilities.domains[
-          domain
-        ]
+    await client.query(
+      'SAVEPOINT domain_observation'
+    );
+
+    try {
+      domains[domain] =
+        await observeDomain(
+          domain,
+          accessToken,
+          capabilities.domains[
+            domain
+          ]
+        );
+
+      await client.query(
+        'RELEASE SAVEPOINT domain_observation'
       );
+    } catch (err) {
+      await client.query(
+        'ROLLBACK TO SAVEPOINT domain_observation'
+      );
+
+      await client.query(
+        'RELEASE SAVEPOINT domain_observation'
+      );
+
+      domains[domain] = {
+        domain,
+
+        state:
+          'observation_failed',
+
+        observed: false,
+
+        observations: 0,
+
+        error_code:
+          getPlaidErrorCode(err),
+
+        error_message:
+          getPlaidErrorMessage(err),
+      };
+    }
   }
 
   return domains;
@@ -1256,9 +1300,15 @@ async function syncOneItem(item) {
     await pool.query(
       `
         INSERT INTO sync_runs (
-          plaid_item_id
+          plaid_item_id,
+          modified_count,
+          removed_count
         )
-        VALUES ($1)
+        VALUES (
+          $1,
+          0,
+          0
+        )
         RETURNING id
       `,
       [item.id]
@@ -1270,10 +1320,18 @@ async function syncOneItem(item) {
   const client =
     await pool.connect();
 
+  let committed = false;
+
   try {
     await client.query(
       'BEGIN'
     );
+
+    /*
+     * ----------------------------------------------------------------------
+     * ACCESS TOKEN
+     * ----------------------------------------------------------------------
+     */
 
     const accessToken =
       decrypt(
@@ -1282,7 +1340,7 @@ async function syncOneItem(item) {
 
     /*
      * ----------------------------------------------------------------------
-     * AUTHORITATIVE ITEM CAPABILITY DISCOVERY
+     * ITEM CAPABILITIES
      * ----------------------------------------------------------------------
      */
 
@@ -1351,31 +1409,37 @@ async function syncOneItem(item) {
      * ----------------------------------------------------------------------
      * TRANSACTIONS
      * ----------------------------------------------------------------------
-     *
-     * Transactions are only synchronized when the Item actually has the
-     * Transactions capability.
      */
 
     let transactionResult = {
-      state: 'not_available',
+      state:
+        'not_available',
+
       added: 0,
+
       modified: 0,
+
       removed: 0,
+
       nextCursor:
-        item.cursor || null,
+        item.cursor ||
+        null,
     };
 
     const transactionCapability =
       capabilities.domains
         .transactions;
 
+    const transactionsAvailable =
+      transactionCapability &&
+      (
+        transactionCapability.initialized ||
+        transactionCapability.consented ||
+        transactionCapability.available
+      );
+
     if (
-      transactionCapability
-        .initialized ||
-      transactionCapability
-        .consented ||
-      transactionCapability
-        .available
+      transactionsAvailable
     ) {
       const {
         added,
@@ -1395,6 +1459,7 @@ async function syncOneItem(item) {
       /*
        * ADDED
        */
+
       for (
         const txn
         of added
@@ -1404,9 +1469,14 @@ async function syncOneItem(item) {
             txn.account_id
           ];
 
-        if (!accountId) {
+        if (
+          !accountId
+        ) {
           console.warn(
-            `Skipping transaction ${txn.transaction_id}: account not found`
+            [
+              `Skipping transaction ${txn.transaction_id}`,
+              'because its account was not found.',
+            ].join(' ')
           );
 
           continue;
@@ -1431,6 +1501,7 @@ async function syncOneItem(item) {
       /*
        * MODIFIED
        */
+
       for (
         const txn
         of modified
@@ -1440,9 +1511,14 @@ async function syncOneItem(item) {
             txn.account_id
           ];
 
-        if (!accountId) {
+        if (
+          !accountId
+        ) {
           console.warn(
-            `Skipping modified transaction ${txn.transaction_id}: account not found`
+            [
+              `Skipping modified transaction ${txn.transaction_id}`,
+              'because its account was not found.',
+            ].join(' ')
           );
 
           continue;
@@ -1467,6 +1543,7 @@ async function syncOneItem(item) {
       /*
        * REMOVED
        */
+
       for (
         const removedTxn
         of removed
@@ -1477,15 +1554,18 @@ async function syncOneItem(item) {
             removedTxn
           );
 
-        if (wasKnown) {
+        if (
+          wasKnown
+        ) {
           syncedRemoved += 1;
         }
       }
 
       /*
-       * Cursor is advanced only after every transaction mutation and
-       * Round-Up reconciliation has succeeded.
+       * The cursor advances only after all transaction mutations and
+       * Round-Up reconciliation have succeeded.
        */
+
       await client.query(
         `
           UPDATE plaid_items
@@ -1499,13 +1579,18 @@ async function syncOneItem(item) {
       );
 
       transactionResult = {
-        state: 'observed',
+        state:
+          'observed',
+
         added:
           syncedAdded,
+
         modified:
           syncedModified,
+
         removed:
           syncedRemoved,
+
         nextCursor,
       };
     }
@@ -1514,16 +1599,6 @@ async function syncOneItem(item) {
      * ----------------------------------------------------------------------
      * OTHER DOMAINS
      * ----------------------------------------------------------------------
-     *
-     * These are intentionally independent.
-     *
-     * A failure in Identity does not roll back successful transaction
-     * synchronization.
-     *
-     * NOTE:
-     * The actual specialized-domain persistence layer must be connected
-     * against the real current database schema before those observations
-     * are written as canonical financial records.
      */
 
     const domainResults =
@@ -1539,21 +1614,22 @@ async function syncOneItem(item) {
      * COMMIT
      * ----------------------------------------------------------------------
      *
-     * Transactions, balance observations that were matched to existing
-     * accounts, and all other safe state changes are committed together.
-     *
-     * Specialized observations that could not yet be canonically persisted
-     * are not fabricated.
+     * If COMMIT succeeds, transaction data is durable.
      */
 
     await client.query(
       'COMMIT'
     );
 
+    committed = true;
+
     /*
      * ----------------------------------------------------------------------
      * SUCCESS RECORD
      * ----------------------------------------------------------------------
+     *
+     * IMPORTANT:
+     * This occurs only after the transaction has actually committed.
      */
 
     await pool.query(
@@ -1574,23 +1650,6 @@ async function syncOneItem(item) {
         runId,
       ]
     );
-
-    /*
-     * ----------------------------------------------------------------------
-     * RESULT
-     * ----------------------------------------------------------------------
-     *
-     * This result is deliberately rich.
-     *
-     * It distinguishes:
-     *
-     *   capability
-     *   observation
-     *   failure
-     *   specialization
-     *
-     * without ever converting capability into financial data.
-     */
 
     return {
       plaid_item_id:
@@ -1628,11 +1687,24 @@ async function syncOneItem(item) {
 
       domains:
         domainResults,
+
+      committed: true,
     };
   } catch (err) {
-    await client.query(
-      'ROLLBACK'
-    );
+    if (
+      !committed
+    ) {
+      try {
+        await client.query(
+          'ROLLBACK'
+        );
+      } catch (rollbackError) {
+        console.error(
+          'Transaction rollback failed:',
+          rollbackError
+        );
+      }
+    }
 
     const detail =
       getPlaidErrorMessage(err);
@@ -1642,20 +1714,27 @@ async function syncOneItem(item) {
       err
     );
 
-    await pool.query(
-      `
-        UPDATE sync_runs
-        SET
-          finished_at = now(),
-          status = 'error',
-          error_message = $1
-        WHERE id = $2
-      `,
-      [
-        detail,
-        runId,
-      ]
-    );
+    try {
+      await pool.query(
+        `
+          UPDATE sync_runs
+          SET
+            finished_at = now(),
+            status = 'error',
+            error_message = $1
+          WHERE id = $2
+        `,
+        [
+          detail,
+          runId,
+        ]
+      );
+    } catch (runUpdateError) {
+      console.error(
+        'Unable to update sync_runs failure state:',
+        runUpdateError
+      );
+    }
 
     return {
       plaid_item_id:
@@ -1666,6 +1745,8 @@ async function syncOneItem(item) {
 
       error_code:
         getPlaidErrorCode(err),
+
+      committed: false,
     };
   } finally {
     client.release();
@@ -1710,7 +1791,8 @@ async function runSync(
     const failures =
       results.filter(
         result =>
-          result.error
+          result.error ||
+          result.committed !== true
       );
 
     return res.json({
@@ -1735,6 +1817,7 @@ async function runSync(
 
     return res.status(500).json({
       status: 'error',
+
       message:
         err.message,
     });
