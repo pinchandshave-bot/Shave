@@ -7,10 +7,10 @@ const rateLimit = require('express-rate-limit');
 const pool = require('./db');
 
 const {
+  createLinkToken,
+  createUpdateModeLinkToken,
+  getProductCoverage,
   plaidClient,
-  PLAID_REQUIRED_PRODUCTS,
-  PLAID_OPTIONAL_PRODUCTS,
-  PLAID_SPECIALIZED_PRODUCTS,
 } = require('./plaidClient');
 
 const {
@@ -81,94 +81,12 @@ const authLimiter = rateLimit({
   max: 8,
   standardHeaders: true,
   legacyHeaders: false,
-
   message: {
     status: 'error',
     message:
       'Too many attempts. Try again later.',
   },
 });
-
-/*
- * --------------------------------------------------------------------------
- * PLAID PRODUCT ORCHESTRATION
- * --------------------------------------------------------------------------
- *
- * iBag deliberately separates:
- *
- * 1. Products that must exist immediately.
- * 2. Products that are useful but should not restrict Link.
- * 3. Products for which consent can be collected without immediate
- *    extraction/billing.
- * 4. Specialized products that require their own lifecycle.
- *
- * This is an orchestration policy, not a claim that any Item actually
- * supports every product.
- *
- * Actual product availability is always determined from Plaid.
- */
-
-/*
- * Transactions is the foundational Phase 1 product.
- */
-const INITIAL_REQUIRED_PRODUCTS = [
-  ...PLAID_REQUIRED_PRODUCTS,
-];
-
-/*
- * Auth is useful to iBag when account-access intelligence requires it,
- * but it should not unnecessarily restrict institutions/account types.
- *
- * Identity is handled as required-if-supported because iBag's intelligence
- * architecture benefits from obtaining it where the connected institution
- * supports it.
- */
-const INITIAL_OPTIONAL_PRODUCTS = [
-  ...PLAID_OPTIONAL_PRODUCTS.filter(
-    (product) =>
-      product === 'auth',
-  ),
-];
-
-/*
- * These products can be consented to without forcing immediate extraction.
- *
- * iBag can then activate the appropriate intelligence domain only when:
- *
- * - the Item supports the product,
- * - the user's connected accounts make the domain relevant,
- * - and the required Plaid authorization exists.
- *
- * This is especially important for Investments and Liabilities.
- */
-const INITIAL_ADDITIONAL_CONSENTED_PRODUCTS = [
-  'liabilities',
-  'investments',
-  'statements',
-];
-
-/*
- * Assets has a specialized lifecycle and is deliberately not initialized
- * as a normal Phase 1 product.
- *
- * It can be added through the appropriate update-mode flow when iBag has
- * sufficient evidence/reason to request an Asset Report.
- */
-const SPECIALIZED_PRODUCTS =
-  PLAID_SPECIALIZED_PRODUCTS.filter(
-    (product) =>
-      product === 'assets',
-  );
-
-/*
- * Identity is intentionally represented separately from optional products.
- *
- * Plaid's Required If Supported mechanism allows iBag to request Identity
- * where supported without filtering out institutions that cannot provide it.
- */
-const REQUIRED_IF_SUPPORTED_PRODUCTS = [
-  'identity',
-];
 
 /*
  * --------------------------------------------------------------------------
@@ -310,32 +228,18 @@ app.get(
 
 /*
  * --------------------------------------------------------------------------
- * PLAID INITIAL LINK
+ * PLAID - INITIAL LINK
  * --------------------------------------------------------------------------
  *
- * The initial Link session is intentionally optimized for iBag's primary
- * intelligence foundation.
+ * iBag intentionally starts with the smallest required initialization set.
  *
- * products:
- *   Transactions — required.
+ * Transactions is the core Phase 1 data foundation.
  *
- * optional_products:
- *   Auth — useful but must not unnecessarily restrict Link.
+ * Auth and Identity are optional so institutions are not unnecessarily
+ * excluded from the connection experience.
  *
- * required_if_supported_products:
- *   Identity — obtain it where supported without eliminating unsupported
- *   institutions.
- *
- * additional_consented_products:
- *   Liabilities, Investments, Statements — collect consent without
- *   unnecessarily initializing all of them immediately.
- *
- * IMPORTANT:
- *
- * iBag never assumes that inclusion in one of these arrays means the
- * product is actually available on the resulting Item.
- *
- * The Item must be inspected through Plaid.
+ * Liabilities and Investments are handled through consent/update flows
+ * rather than forcing every institution to support every product.
  */
 
 app.post(
@@ -346,19 +250,17 @@ app.post(
       const activeCount =
         await pool.query(
           `
-            SELECT count(*)
+            SELECT
+              count(*)
             FROM plaid_items
-            WHERE user_id = $1
-              AND status = 'active'
+            WHERE status = 'active'
           `,
-          [req.user.id],
         );
 
       /*
-       * Capacity is per user, not global.
+       * Preserve the existing deployment capacity boundary.
        *
-       * This prevents one user's Items from consuming another user's
-       * connection capacity.
+       * This is an application capacity rule, not a Plaid product rule.
        */
       const CAPACITY_LIMIT = 9;
 
@@ -370,91 +272,34 @@ app.post(
         return res.status(503).json({
           status: 'error',
           message:
-            'iBag is at the connection limit for this account right now.',
+            'iBag is at capacity for new bank connections right now. Try again soon.',
         });
       }
 
-      const request = {
-        user: {
-          client_user_id:
-            String(req.user.id),
-        },
-
-        client_name: 'iBag',
-
-        products:
-          INITIAL_REQUIRED_PRODUCTS,
-
-        optional_products:
-          INITIAL_OPTIONAL_PRODUCTS,
-
-        required_if_supported_products:
-          REQUIRED_IF_SUPPORTED_PRODUCTS,
-
-        additional_consented_products:
-          INITIAL_ADDITIONAL_CONSENTED_PRODUCTS,
-
-        country_codes: ['US'],
-
-        language: 'en',
-      };
-
-      console.log(
-        'Creating iBag Plaid Link token',
-        {
-          user_id:
-            String(req.user.id),
-
-          products:
-            request.products,
-
-          optional_products:
-            request.optional_products,
-
-          required_if_supported_products:
-            request.required_if_supported_products,
-
-          additional_consented_products:
-            request.additional_consented_products,
-        },
-      );
-
       const response =
-        await plaidClient.linkTokenCreate(
-          request,
-        );
+        await createLinkToken({
+          userId:
+            req.user.id,
+
+          webhookUrl:
+            process.env.PLAID_WEBHOOK_URL ||
+            null,
+        });
 
       return res.json({
         status: 'ok',
 
         link_token:
-          response.data.link_token,
+          response.link_token,
 
         expiration:
-          response.data.expiration,
+          response.expiration,
 
         request_id:
-          response.data.request_id,
+          response.request_id,
 
-        product_configuration: {
-          required:
-            INITIAL_REQUIRED_PRODUCTS,
-
-          optional:
-            INITIAL_OPTIONAL_PRODUCTS,
-
-          required_if_supported:
-            REQUIRED_IF_SUPPORTED_PRODUCTS,
-
-          additional_consented:
-            INITIAL_ADDITIONAL_CONSENTED_PRODUCTS,
-
-          specialized:
-            SPECIALIZED_PRODUCTS,
-
-          balance:
-            'automatic through accountsBalanceGet',
-        },
+        initial_products:
+          response.initial_products,
       });
     } catch (err) {
       console.error(
@@ -462,15 +307,23 @@ app.post(
         err,
       );
 
-      const detail =
-        err.response?.data ||
-        err.message;
-
-      return res.status(
-        err.response?.status || 500,
-      ).json({
+      return res.status(500).json({
         status: 'error',
-        detail,
+
+        message:
+          'Unable to prepare the secure Plaid connection.',
+
+        code:
+          err.code || null,
+
+        detail:
+          process.env.NODE_ENV ===
+          'production'
+            ? undefined
+            : err.message,
+
+        request_id:
+          err.requestId || null,
       });
     }
   },
@@ -478,17 +331,104 @@ app.post(
 
 /*
  * --------------------------------------------------------------------------
- * PLAID UPDATE MODE
+ * PLAID - PRODUCT COVERAGE
  * --------------------------------------------------------------------------
  *
- * Existing Item product consent.
+ * This endpoint exposes observed Plaid product state.
  *
- * The caller supplies a list of desired products.
+ * It does NOT manufacture availability.
+ */
+
+app.get(
+  '/plaid/items/:plaid_item_id/products',
+  requireAuth,
+  async (req, res) => {
+    try {
+      const {
+        plaid_item_id,
+      } = req.params;
+
+      const itemResult =
+        await pool.query(
+          `
+            SELECT
+              plaid_access_token_encrypted
+            FROM plaid_items
+            WHERE plaid_item_id = $1
+              AND user_id = $2
+              AND status = 'active'
+            LIMIT 1
+          `,
+          [
+            plaid_item_id,
+            req.user.id,
+          ],
+        );
+
+      if (
+        itemResult.rows.length ===
+        0
+      ) {
+        return res.status(404).json({
+          status: 'error',
+          message:
+            'Plaid Item not found for this user',
+        });
+      }
+
+      const accessToken =
+        decrypt(
+          itemResult.rows[0]
+            .plaid_access_token_encrypted,
+        );
+
+      const coverage =
+        await getProductCoverage(
+          accessToken,
+        );
+
+      return res.json({
+        status: 'ok',
+        plaid_item_id,
+        coverage,
+      });
+    } catch (err) {
+      console.error(
+        'Plaid product coverage failed:',
+        err,
+      );
+
+      return res.status(500).json({
+        status: 'error',
+        message:
+          'Unable to determine Plaid product coverage.',
+        code:
+          err.code || null,
+        request_id:
+          err.requestId || null,
+      });
+    }
+  },
+);
+
+/*
+ * --------------------------------------------------------------------------
+ * PLAID - UPDATE MODE
+ * --------------------------------------------------------------------------
  *
- * iBag validates the requested products against its supported orchestration
- * boundary before sending anything to Plaid.
+ * Supports three distinct update-mode strategies:
  *
- * No product is treated as available merely because it was requested.
+ * 1. Additional consent:
+ *    Auth / Identity / Investments / Liabilities
+ *
+ * 2. Specialized credit products:
+ *    Assets / Statements
+ *
+ * 3. Normal update mode:
+ *    Repair credentials, permissions, account access, etc.
+ *
+ * Specialized products MUST NOT be placed into
+ * additional_consented_products.
  */
 
 app.post(
@@ -499,6 +439,9 @@ app.post(
       const {
         plaid_item_id,
         products,
+        additional_consented_products,
+        statements,
+        asset_report,
       } = req.body;
 
       if (!plaid_item_id) {
@@ -514,7 +457,6 @@ app.post(
           `
             SELECT
               id,
-              plaid_item_id,
               plaid_access_token_encrypted
             FROM plaid_items
             WHERE plaid_item_id = $1
@@ -529,7 +471,8 @@ app.post(
         );
 
       if (
-        itemRow.rows.length === 0
+        itemRow.rows.length ===
+        0
       ) {
         return res.status(404).json({
           status: 'error',
@@ -545,96 +488,231 @@ app.post(
         );
 
       /*
-       * Default update-mode consent set.
-       *
-       * These products can be requested later without forcing every
-       * intelligence domain onto every user.
+       * Normalize caller input.
        */
       const requestedProducts =
-        Array.isArray(products) &&
-        products.length > 0
+        Array.isArray(products)
           ? products
-          : [
-              'liabilities',
-              'investments',
-              'statements',
-            ];
+          : [];
 
-      const allowedProducts =
-        new Set([
-          'auth',
-          'identity',
-          'liabilities',
-          'investments',
-          'statements',
-          'signal',
-        ]);
+      const requestedConsent =
+        Array.isArray(
+          additional_consented_products,
+        )
+          ? additional_consented_products
+          : [];
 
-      const invalidProducts =
+      /*
+       * Specialized credit products.
+       *
+       * These belong in products, not additional_consented_products.
+       */
+      const specializedProducts =
         requestedProducts.filter(
-          (product) =>
-            !allowedProducts.has(
-              product,
-            ),
+          product =>
+            product === 'assets' ||
+            product === 'statements',
+        );
+
+      /*
+       * Products that may be requested through
+       * additional consent.
+       */
+      const consentProducts =
+        requestedConsent.filter(
+          product =>
+            product === 'auth' ||
+            product === 'identity' ||
+            product === 'investments' ||
+            product === 'investments_auth' ||
+            product === 'liabilities' ||
+            product === 'transactions' ||
+            product === 'signal' ||
+            product === 'balance_plus',
+        );
+
+      /*
+       * Do not allow Assets or Statements to enter
+       * additional_consented_products.
+       */
+      const invalidConsentProducts =
+        requestedConsent.filter(
+          product =>
+            product === 'assets' ||
+            product === 'statements',
         );
 
       if (
-        invalidProducts.length > 0
+        invalidConsentProducts.length >
+        0
       ) {
         return res.status(400).json({
           status: 'error',
+
           message:
-            'One or more requested products are not supported by this iBag update flow.',
+            'Assets and Statements must be requested through the specialized update-mode product flow, not additional_consented_products.',
+
           invalid_products:
-            invalidProducts,
+            invalidConsentProducts,
         });
       }
 
       /*
-       * Update mode for additional consent uses
-       * additional_consented_products.
-       *
-       * This deliberately does NOT put ordinary consented products into
-       * products, because that would change the lifecycle semantics.
+       * Specialized product request.
        */
-      const request = {
-        user: {
-          client_user_id:
-            String(req.user.id),
-        },
+      if (
+        specializedProducts.length >
+        0
+      ) {
+        /*
+         * Plaid requires the specialized product
+         * to be placed in products during update mode.
+         *
+         * We intentionally permit one specialized
+         * credit product per update session.
+         */
+        if (
+          specializedProducts.length >
+          1
+        ) {
+          return res.status(400).json({
+            status: 'error',
+            message:
+              'Request Assets and Statements through separate specialized update-mode sessions.',
+          });
+        }
 
-        client_name: 'iBag',
+        const specializedProduct =
+          specializedProducts[0];
 
-        access_token:
+        const request = {
+          user: {
+            client_user_id:
+              String(req.user.id),
+          },
+
+          client_name:
+            'iBag',
+
+          access_token:
+            accessToken,
+
+          country_codes: [
+            'US',
+          ],
+
+          language: 'en',
+
+          products: [
+            specializedProduct,
+          ],
+        };
+
+        /*
+         * Statements requires its configuration
+         * object when requested.
+         */
+        if (
+          specializedProduct ===
+          'statements'
+        ) {
+          if (
+            !statements ||
+            typeof statements !==
+              'object'
+          ) {
+            return res.status(400).json({
+              status: 'error',
+              message:
+                'statements configuration is required when adding Statements.',
+            });
+          }
+
+          request.statements =
+            statements;
+        }
+
+        /*
+         * Assets may require asset-specific
+         * configuration depending on the
+         * application's selected Plaid flow.
+         */
+        if (
+          specializedProduct ===
+            'assets' &&
+          asset_report &&
+          typeof asset_report ===
+            'object'
+        ) {
+          request.asset_report =
+            asset_report;
+        }
+
+        const response =
+          await plaidClient.linkTokenCreate(
+            request,
+          );
+
+        return res.json({
+          status: 'ok',
+
+          mode:
+            'specialized_product',
+
+          product:
+            specializedProduct,
+
+          link_token:
+            response.data.link_token,
+
+          expiration:
+            response.data.expiration,
+
+          request_id:
+            response.data.request_id,
+        });
+      }
+
+      /*
+       * Normal update mode / additional consent.
+       *
+       * No products array is supplied here.
+       */
+      const response =
+        await createUpdateModeLinkToken({
+          userId:
+            req.user.id,
+
           accessToken,
 
-        additional_consented_products:
-          requestedProducts,
+          webhookUrl:
+            process.env.PLAID_WEBHOOK_URL ||
+            null,
 
-        country_codes: ['US'],
-
-        language: 'en',
-      };
-
-      const response =
-        await plaidClient.linkTokenCreate(
-          request,
-        );
+          additionalConsentedProducts:
+            consentProducts,
+        });
 
       return res.json({
         status: 'ok',
 
+        mode:
+          consentProducts.length >
+          0
+            ? 'additional_consent'
+            : 'update',
+
+        products:
+          consentProducts,
+
         link_token:
-          response.data.link_token,
+          response.link_token,
 
         expiration:
-          response.data.expiration,
+          response.expiration,
 
         request_id:
-          response.data.request_id,
-
-        requested_products:
-          requestedProducts,
+          response.request_id,
       });
     } catch (err) {
       console.error(
@@ -642,134 +720,23 @@ app.post(
         err,
       );
 
-      const detail =
-        err.response?.data ||
-        err.message;
-
-      return res.status(
-        err.response?.status || 500,
-      ).json({
+      return res.status(500).json({
         status: 'error',
-        detail,
-      });
-    }
-  },
-);
 
-/*
- * --------------------------------------------------------------------------
- * PLAID ASSET REPORT UPDATE FLOW
- * --------------------------------------------------------------------------
- *
- * Assets has a specialized lifecycle.
- *
- * This endpoint explicitly creates an update-mode Link token for Assets.
- *
- * No Asset Report is fabricated or assumed to exist.
- */
+        message:
+          'Unable to prepare the secure Plaid update connection.',
 
-app.post(
-  '/plaid/create-assets-update-link-token',
-  requireAuth,
-  async (req, res) => {
-    try {
-      const {
-        plaid_item_id,
-      } = req.body;
+        code:
+          err.code || null,
 
-      if (!plaid_item_id) {
-        return res.status(400).json({
-          status: 'error',
-          message:
-            'plaid_item_id is required',
-        });
-      }
-
-      const itemRow =
-        await pool.query(
-          `
-            SELECT
-              id,
-              plaid_item_id,
-              plaid_access_token_encrypted
-            FROM plaid_items
-            WHERE plaid_item_id = $1
-              AND user_id = $2
-              AND status = 'active'
-            LIMIT 1
-          `,
-          [
-            plaid_item_id,
-            req.user.id,
-          ],
-        );
-
-      if (
-        itemRow.rows.length === 0
-      ) {
-        return res.status(404).json({
-          status: 'error',
-          message:
-            'Item not found for this user',
-        });
-      }
-
-      const accessToken =
-        decrypt(
-          itemRow.rows[0]
-            .plaid_access_token_encrypted,
-        );
-
-      const response =
-        await plaidClient.linkTokenCreate({
-          user: {
-            client_user_id:
-              String(req.user.id),
-          },
-
-          client_name: 'iBag',
-
-          access_token:
-            accessToken,
-
-          products: [
-            'assets',
-          ],
-
-          country_codes: ['US'],
-
-          language: 'en',
-        });
-
-      return res.json({
-        status: 'ok',
-
-        link_token:
-          response.data.link_token,
-
-        expiration:
-          response.data.expiration,
+        detail:
+          process.env.NODE_ENV ===
+          'production'
+            ? undefined
+            : err.message,
 
         request_id:
-          response.data.request_id,
-
-        product: 'assets',
-      });
-    } catch (err) {
-      console.error(
-        'Plaid Assets update Link token failed:',
-        err,
-      );
-
-      const detail =
-        err.response?.data ||
-        err.message;
-
-      return res.status(
-        err.response?.status || 500,
-      ).json({
-        status: 'error',
-        detail,
+          err.requestId || null,
       });
     }
   },
@@ -777,126 +744,7 @@ app.post(
 
 /*
  * --------------------------------------------------------------------------
- * PLAID STATEMENTS UPDATE FLOW
- * --------------------------------------------------------------------------
- *
- * Statements also has a specialized update-mode lifecycle.
- */
-
-app.post(
-  '/plaid/create-statements-update-link-token',
-  requireAuth,
-  async (req, res) => {
-    try {
-      const {
-        plaid_item_id,
-      } = req.body;
-
-      if (!plaid_item_id) {
-        return res.status(400).json({
-          status: 'error',
-          message:
-            'plaid_item_id is required',
-        });
-      }
-
-      const itemRow =
-        await pool.query(
-          `
-            SELECT
-              id,
-              plaid_item_id,
-              plaid_access_token_encrypted
-            FROM plaid_items
-            WHERE plaid_item_id = $1
-              AND user_id = $2
-              AND status = 'active'
-            LIMIT 1
-          `,
-          [
-            plaid_item_id,
-            req.user.id,
-          ],
-        );
-
-      if (
-        itemRow.rows.length === 0
-      ) {
-        return res.status(404).json({
-          status: 'error',
-          message:
-            'Item not found for this user',
-        });
-      }
-
-      const accessToken =
-        decrypt(
-          itemRow.rows[0]
-            .plaid_access_token_encrypted,
-        );
-
-      const request = {
-        user: {
-          client_user_id:
-            String(req.user.id),
-        },
-
-        client_name: 'iBag',
-
-        access_token:
-          accessToken,
-
-        products: [
-          'statements',
-        ],
-
-        country_codes: ['US'],
-
-        language: 'en',
-      };
-
-      const response =
-        await plaidClient.linkTokenCreate(
-          request,
-        );
-
-      return res.json({
-        status: 'ok',
-
-        link_token:
-          response.data.link_token,
-
-        expiration:
-          response.data.expiration,
-
-        request_id:
-          response.data.request_id,
-
-        product: 'statements',
-      });
-    } catch (err) {
-      console.error(
-        'Plaid Statements update Link token failed:',
-        err,
-      );
-
-      const detail =
-        err.response?.data ||
-        err.message;
-
-      return res.status(
-        err.response?.status || 500,
-      ).json({
-        status: 'error',
-        detail,
-      });
-    }
-  },
-);
-
-/*
- * --------------------------------------------------------------------------
- * PLAID PUBLIC TOKEN EXCHANGE
+ * PLAID - EXCHANGE PUBLIC TOKEN
  * --------------------------------------------------------------------------
  */
 
@@ -904,9 +752,6 @@ app.post(
   '/plaid/exchange-public-token',
   requireAuth,
   async (req, res) => {
-    const client =
-      await pool.connect();
-
     try {
       const {
         public_token,
@@ -922,121 +767,127 @@ app.post(
       }
 
       const exchangeRes =
-        await plaidClient.itemPublicTokenExchange({
-          public_token,
-        });
+        await plaidClient.itemPublicTokenExchange(
+          {
+            public_token,
+          },
+        );
 
-      const accessToken =
+      const access_token =
         exchangeRes.data
           .access_token;
 
-      const plaidItemId =
+      const plaid_item_id =
         exchangeRes.data.item_id;
 
       const userId =
         req.user.id;
 
       const encryptedToken =
-        encrypt(accessToken);
+        encrypt(access_token);
 
       /*
-       * Prevent accidental duplicate ownership records.
-       *
-       * The unique constraint at the database level should remain the
-       * ultimate enforcement mechanism.
+       * Prevent accidental duplicate storage
+       * of the same Plaid Item for the same user.
        */
       const existingItem =
-        await client.query(
+        await pool.query(
           `
             SELECT
-              id,
-              user_id
+              id
             FROM plaid_items
             WHERE plaid_item_id = $1
+              AND user_id = $2
             LIMIT 1
           `,
-          [plaidItemId],
-        );
-
-      if (
-        existingItem.rows.length > 0
-      ) {
-        if (
-          String(
-            existingItem.rows[0]
-              .user_id,
-          ) !== String(userId)
-        ) {
-          return res.status(409).json({
-            status: 'error',
-            message:
-              'This Plaid Item is already associated with another user.',
-          });
-        }
-
-        return res.status(409).json({
-          status: 'error',
-          message:
-            'This financial connection is already connected to your iBag.',
-          plaid_item_id:
-            plaidItemId,
-        });
-      }
-
-      await client.query(
-        'BEGIN',
-      );
-
-      const itemInsert =
-        await client.query(
-          `
-            INSERT INTO plaid_items
-            (
-              user_id,
-              plaid_item_id,
-              plaid_access_token_encrypted,
-              institution_name,
-              status
-            )
-            VALUES
-            ($1, $2, $3, $4, 'active')
-            RETURNING id
-          `,
           [
+            plaid_item_id,
             userId,
-            plaidItemId,
-            encryptedToken,
-            institution_name ||
-              null,
           ],
         );
 
-      const plaidItemDbId =
-        itemInsert.rows[0].id;
+      let plaidItemDbId;
+
+      if (
+        existingItem.rows.length >
+        0
+      ) {
+        const updatedItem =
+          await pool.query(
+            `
+              UPDATE plaid_items
+              SET
+                plaid_access_token_encrypted = $1,
+                institution_name =
+                  COALESCE(
+                    $2,
+                    institution_name
+                  ),
+                status = 'active',
+                updated_at = now()
+              WHERE id = $3
+              RETURNING id
+            `,
+            [
+              encryptedToken,
+              institution_name ||
+                null,
+              existingItem
+                .rows[0].id,
+            ],
+          );
+
+        plaidItemDbId =
+          updatedItem.rows[0].id;
+      } else {
+        const itemInsert =
+          await pool.query(
+            `
+              INSERT INTO plaid_items
+              (
+                user_id,
+                plaid_item_id,
+                plaid_access_token_encrypted,
+                institution_name,
+                status
+              )
+              VALUES
+              ($1, $2, $3, $4, 'active')
+              RETURNING id
+            `,
+            [
+              userId,
+              plaid_item_id,
+              encryptedToken,
+              institution_name ||
+                null,
+            ],
+          );
+
+        plaidItemDbId =
+          itemInsert.rows[0].id;
+      }
 
       /*
-       * Accounts are sourced directly from Plaid.
-       *
-       * No account metadata is invented.
+       * Retrieve authoritative account state
+       * from Plaid.
        */
       const accountsRes =
         await plaidClient.accountsGet({
-          access_token:
-            accessToken,
+          access_token,
         });
 
       for (
         const acct of
         accountsRes.data.accounts
       ) {
-        await client.query(
+        await pool.query(
           `
             INSERT INTO accounts
             (
               plaid_item_id,
               plaid_account_id,
               name,
-              official_name,
               type,
               subtype,
               mask,
@@ -1056,7 +907,6 @@ app.post(
               $7,
               $8,
               $9,
-              $10,
               now()
             )
             ON CONFLICT
@@ -1067,9 +917,6 @@ app.post(
 
               name =
                 EXCLUDED.name,
-
-              official_name =
-                EXCLUDED.official_name,
 
               type =
                 EXCLUDED.type,
@@ -1094,30 +941,15 @@ app.post(
           `,
           [
             plaidItemDbId,
-
             acct.account_id,
-
-            acct.name ||
-              null,
-
-            acct.official_name ||
-              null,
-
-            acct.type ||
-              null,
-
-            acct.subtype ||
-              null,
-
-            acct.mask ||
-              null,
-
+            acct.name,
+            acct.type,
+            acct.subtype,
+            acct.mask,
             acct.balances?.current ??
               null,
-
             acct.balances?.available ??
               null,
-
             acct.balances
               ?.iso_currency_code ||
               'USD',
@@ -1125,19 +957,13 @@ app.post(
         );
       }
 
-      await client.query(
-        'COMMIT',
-      );
-
+      /*
+       * Immediately synchronize the authoritative
+       * transaction delta.
+       */
       let immediateSyncResult =
         null;
 
-      /*
-       * Transaction synchronization happens after the Item and accounts
-       * have been committed.
-       *
-       * This avoids creating a sync that references uncommitted state.
-       */
       try {
         const freshItem =
           await pool.query(
@@ -1149,17 +975,13 @@ app.post(
                 cursor
               FROM plaid_items
               WHERE id = $1
-                AND user_id = $2
-                AND status = 'active'
             `,
-            [
-              plaidItemDbId,
-              userId,
-            ],
+            [plaidItemDbId],
           );
 
         if (
-          freshItem.rows.length > 0
+          freshItem.rows.length >
+          0
         ) {
           immediateSyncResult =
             await syncOneItem(
@@ -1168,10 +990,9 @@ app.post(
         }
       } catch (syncErr) {
         /*
-         * The connection itself remains valid.
-         *
-         * Sync failure is surfaced as data-state failure rather than
-         * pretending the transaction data exists.
+         * The Item itself remains stored even if
+         * the immediate transaction synchronization
+         * has a temporary failure.
          */
         console.error(
           'Immediate post-link sync failed:',
@@ -1182,54 +1003,46 @@ app.post(
       return res.json({
         status: 'ok',
 
-        plaid_item_id:
-          plaidItemId,
+        plaid_item_id,
 
         accounts_stored:
-          accountsRes.data.accounts
-            .length,
+          accountsRes.data
+            .accounts.length,
 
         immediate_sync:
           immediateSyncResult,
       });
     } catch (err) {
-      try {
-        await client.query(
-          'ROLLBACK',
-        );
-      } catch (
-        rollbackError
-      ) {
-        console.error(
-          'Plaid exchange rollback failed:',
-          rollbackError,
-        );
-      }
-
       console.error(
         'Plaid public token exchange failed:',
         err,
       );
 
-      const detail =
-        err.response?.data ||
-        err.message;
-
-      return res.status(
-        err.response?.status || 500,
-      ).json({
+      return res.status(500).json({
         status: 'error',
-        detail,
+
+        message:
+          'Unable to complete the secure financial connection.',
+
+        code:
+          err.code || null,
+
+        detail:
+          process.env.NODE_ENV ===
+          'production'
+            ? undefined
+            : err.message,
+
+        request_id:
+          err.requestId || null,
       });
-    } finally {
-      client.release();
     }
   },
 );
 
 /*
  * --------------------------------------------------------------------------
- * RESYNC AFTER UPDATE MODE
+ * PLAID - RESYNC AFTER UPDATE
  * --------------------------------------------------------------------------
  */
 
@@ -1271,7 +1084,8 @@ app.post(
         );
 
       if (
-        itemRow.rows.length === 0
+        itemRow.rows.length ===
+        0
       ) {
         return res.status(404).json({
           status: 'error',
@@ -1286,11 +1100,7 @@ app.post(
         );
 
       return res.json({
-        status:
-          result.error
-            ? 'partial'
-            : 'ok',
-
+        status: 'ok',
         result,
       });
     } catch (err) {
@@ -1301,7 +1111,12 @@ app.post(
 
       return res.status(500).json({
         status: 'error',
-        message: err.message,
+        message:
+          'Unable to synchronize the financial connection.',
+        code:
+          err.code || null,
+        request_id:
+          err.requestId || null,
       });
     }
   },
@@ -1325,14 +1140,12 @@ app.post(
  * --------------------------------------------------------------------------
  */
 
-app.use(
-  (req, res) => {
-    res.status(404).json({
-      status: 'error',
-      message: 'Not found',
-    });
-  },
-);
+app.use((req, res) => {
+  res.status(404).json({
+    status: 'error',
+    message: 'Not found',
+  });
+});
 
 /*
  * --------------------------------------------------------------------------
@@ -1341,12 +1154,7 @@ app.use(
  */
 
 app.use(
-  (
-    err,
-    req,
-    res,
-    next,
-  ) => {
+  (err, req, res, next) => {
     console.error(
       'Unhandled error:',
       err,
@@ -1369,31 +1177,8 @@ app.use(
 const PORT =
   process.env.PORT || 3000;
 
-app.listen(
-  PORT,
-  () => {
-    console.log(
-      `iBag API listening on port ${PORT}`,
-    );
-
-    console.log(
-      'Plaid product configuration:',
-      {
-        required:
-          INITIAL_REQUIRED_PRODUCTS,
-
-        optional:
-          INITIAL_OPTIONAL_PRODUCTS,
-
-        required_if_supported:
-          REQUIRED_IF_SUPPORTED_PRODUCTS,
-
-        additional_consented:
-          INITIAL_ADDITIONAL_CONSENTED_PRODUCTS,
-
-        specialized:
-          SPECIALIZED_PRODUCTS,
-      },
-    );
-  },
-);
+app.listen(PORT, () => {
+  console.log(
+    `iBag API listening on port ${PORT}`,
+  );
+});
