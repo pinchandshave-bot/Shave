@@ -1,952 +1,287 @@
-require("dotenv").config();
-
-const {
-  Configuration,
-  PlaidApi,
-  PlaidEnvironments,
-} = require("plaid");
-
+const { Configuration, PlaidApi, PlaidEnvironments } = require("plaid");
 /*
- * iBag Plaid Client
+ * iBag Plaid Product Configuration
  *
- * Production integration boundary for Plaid.
- *
- * NON-NEGOTIABLE RULES
- * --------------------
- * - Real authorized financial data only.
- * - No synthetic financial data.
- * - No mock financial data.
- * - No seeded financial data.
- * - No fabricated financial data.
- * - Phase 1 is read-only intelligence.
+ * IMPORTANT:
+ * - Phase 1 is intelligence/read-only.
  * - No money movement.
- * - Requested capability is never treated as granted capability.
- * - Plaid Item state is authoritative for product availability.
+ * - No synthetic, mock, seeded, or fabricated financial data.
+ * - Every enabled Plaid product must produce real user-authorized data
+ *   before iBag treats that domain as observed.
+ *
+ * Balance and Round-Ups are intentionally NOT counted as part of the
+ * eight intelligence products.
+ *
+ * The eight intelligence products:
+ *
+ * 1. Transactions
+ * 2. Identity
+ * 3. Investments
+ * 4. Liabilities
+ * 5. Income
+ * 6. Auth
+ * 7. Assets
+ * 8. Recurring Transactions
  */
-
-const plaidEnv =
-  process.env.PLAID_ENV === "production"
-    ? PlaidEnvironments.production
-    : PlaidEnvironments.sandbox;
-
-const clientId =
-  process.env.PLAID_CLIENT_ID;
-
-const secret =
-  process.env.PLAID_SECRET;
-
-if (!clientId) {
-  throw new Error(
-    "Missing PLAID_CLIENT_ID"
-  );
-}
-
-if (!secret) {
-  throw new Error(
-    "Missing PLAID_SECRET"
-  );
-}
-
-const configuration =
-  new Configuration({
-    basePath: plaidEnv,
-
+const PLAID_PRODUCTS = [
+  "transactions",
+  "identity",
+  "investments",
+  "liabilities",
+  "income",
+  "auth",
+  "assets",
+  "recurring_transactions",
+];
+const PLAID_COUNTRY_CODES = ["US"];
+const PLAID_LANGUAGE = "en";
+function createPlaidClient() {
+  const configuration = new Configuration({
+    basePath:
+      process.env.PLAID_ENV === "production"
+        ? PlaidEnvironments.production
+        : PlaidEnvironments.sandbox,
     baseOptions: {
       headers: {
-        "PLAID-CLIENT-ID":
-          clientId,
-
-        "PLAID-SECRET":
-          secret,
+        "PLAID-CLIENT-ID": process.env.PLAID_CLIENT_ID,
+        "PLAID-SECRET": process.env.PLAID_SECRET,
       },
     },
   });
-
-const plaidClient =
-  new PlaidApi(configuration);
-
-/*
- * --------------------------------------------------------------------------
- * IBAG PLAID CAPABILITY MODEL
- * --------------------------------------------------------------------------
+  return new PlaidApi(configuration);
+}
+const plaidClient = createPlaidClient();
+/**
+ * Create a Link token that explicitly requests all eight
+ * iBag intelligence products.
  *
- * These are capabilities iBag knows how to use.
+ * Balance is intentionally added separately because iBag uses it
+ * operationally for account state, but it is NOT one of the eight
+ * intelligence products.
  *
- * They are NOT claims that a connected Item has access to them.
+ * FIX: index.js calls this as createLinkToken({ userId, webhookUrl }) —
+ * an object — but this used to take a bare userId string, so
+ * String(userId) became the literal text "[object Object]". Signature is
+ * now an options object. Also, webhookUrl is now actually passed through
+ * to Plaid — previously no webhook was ever registered, so Plaid had
+ * nothing to call your webhook handler with.
  */
-
-const PLAID_REQUIRED_PRODUCTS =
-  Object.freeze([
-    "transactions",
-  ]);
-
-const PLAID_OPTIONAL_PRODUCTS =
-  Object.freeze([
-    "auth",
-    "identity",
-    "investments",
-    "liabilities",
-  ]);
-
-const PLAID_SPECIALIZED_PRODUCTS =
-  Object.freeze([
-    "assets",
-    "statements",
-  ]);
-
-/*
- * Compatibility alias.
- *
- * Existing application code may still import PLAID_PRODUCTS.
- *
- * Keep this alias limited to products that are intentionally requested
- * during the ordinary initial Link flow.
- *
- * Do NOT put every iBag-supported Plaid product here.
- */
-const PLAID_PRODUCTS =
-  Object.freeze([
-    "transactions",
-  ]);
-
-const IBAG_PLAID_PRODUCTS =
-  Object.freeze({
-    transactions: {
-      plaidProduct:
-        "transactions",
-
-      linkMode:
-        "required",
-
-      endpoint:
-        "transactionsSync",
-
-      intelligenceDomain:
-        "transactions",
-    },
-
-    auth: {
-      plaidProduct:
-        "auth",
-
-      linkMode:
-        "optional",
-
-      endpoint:
-        "authGet",
-
-      intelligenceDomain:
-        "account_access",
-    },
-
-    balance: {
-      plaidProduct:
-        null,
-
-      linkMode:
-        "automatic",
-
-      endpoint:
-        "accountsBalanceGet",
-
-      intelligenceDomain:
-        "liquidity",
-    },
-
-    identity: {
-      plaidProduct:
-        "identity",
-
-      linkMode:
-        "optional",
-
-      endpoint:
-        "identityGet",
-
-      intelligenceDomain:
-        "identity",
-    },
-
-    investments: {
-      plaidProduct:
-        "investments",
-
-      linkMode:
-        "optional",
-
-      endpoint:
-        "investmentsHoldingsGet",
-
-      intelligenceDomain:
-        "investments",
-    },
-
-    liabilities: {
-      plaidProduct:
-        "liabilities",
-
-      linkMode:
-        "optional",
-
-      endpoint:
-        "liabilitiesGet",
-
-      intelligenceDomain:
-        "liabilities",
-    },
-
-    assets: {
-      plaidProduct:
-        "assets",
-
-      linkMode:
-        "specialized",
-
-      endpoint:
-        "assetReportCreate",
-
-      intelligenceDomain:
-        "assets",
-    },
-
-    statements: {
-      plaidProduct:
-        "statements",
-
-      linkMode:
-        "specialized",
-
-      endpoint:
-        "statementsList",
-
-      intelligenceDomain:
-        "statements",
-    },
-  });
-
-/*
- * --------------------------------------------------------------------------
- * INITIAL LINK TOKEN
- * --------------------------------------------------------------------------
- *
- * The ordinary Link flow requests Transactions.
- *
- * iBag's broader intelligence architecture is NOT represented by stuffing
- * every possible product into this request.
- *
- * Additional capabilities are handled through the appropriate Plaid
- * lifecycle after the Item exists.
- */
-
-async function createLinkToken({
-  userId,
-  webhookUrl = null,
-} = {}) {
+async function createLinkToken({ userId, webhookUrl } = {}) {
   if (!userId) {
-    throw new Error(
-      "createLinkToken requires userId"
-    );
+    throw new Error("userId is required");
   }
-
-  const request = {
+  const response = await plaidClient.linkTokenCreate({
     user: {
-      client_user_id:
-        String(userId),
+      client_user_id: String(userId),
     },
-
-    client_name:
-      "iBag",
-
-    country_codes: [
-      "US",
-    ],
-
-    language:
-      "en",
-
-    products:
-      PLAID_PRODUCTS,
+    client_name: "iBag",
+    products: PLAID_PRODUCTS,
+    country_codes: PLAID_COUNTRY_CODES,
+    language: PLAID_LANGUAGE,
+    /*
+     * Balance is required operationally by iBag but is not counted
+     * toward the eight intelligence products.
+     */
+    optional_products: ["balance"],
+    /*
+     * FIX: previously omitted entirely, so Plaid had no webhook URL to
+     * call. Falls back to undefined (Plaid treats this as "no webhook")
+     * if webhookUrl isn't provided, rather than sending an empty string.
+     */
+    webhook: webhookUrl || undefined,
+    /*
+     * iBag is information/intelligence-only in Phase 1.
+     * Do NOT request transfer/payment products here.
+     */
+  });
+  return {
+    link_token: response.data.link_token,
+    expiration: response.data.expiration,
+    request_id: response.data.request_id,
+    products: PLAID_PRODUCTS,
   };
-
-  if (webhookUrl) {
-    request.webhook =
-      webhookUrl;
-  }
-
-  try {
-    console.log(
-      "Creating Plaid Link token",
-      {
-        userId:
-          String(userId),
-
-        products:
-          request.products,
-
-        country_codes:
-          request.country_codes,
-      }
-    );
-
-    const response =
-      await plaidClient.linkTokenCreate(
-        request
-      );
-
-    return {
-      link_token:
-        response.data.link_token,
-
-      expiration:
-        response.data.expiration,
-
-      request_id:
-        response.data.request_id,
-
-      initial_products:
-        request.products,
-    };
-  } catch (error) {
-    console.error(
-      "Plaid Link token creation failed",
-      {
-        code:
-          error?.response?.data
-            ?.error_code,
-
-        message:
-          error?.response?.data
-            ?.error_message,
-
-        display_message:
-          error?.response?.data
-            ?.display_message,
-
-        request_id:
-          error?.response?.data
-            ?.request_id,
-
-        status:
-          error?.response?.status,
-      }
-    );
-
-    throw normalizePlaidError(
-      error,
-      "PLAID_LINK_TOKEN_CREATE_FAILED"
-    );
-  }
 }
 
-/*
- * --------------------------------------------------------------------------
- * UPDATE-MODE LINK
- * --------------------------------------------------------------------------
+/**
+ * FIX: did not exist. index.js's /plaid/create-update-link-token route
+ * imports and calls this — without it, that route would throw
+ * "createUpdateModeLinkToken is not a function" on every call.
  *
- * This creates an update-mode Link token for an existing Item.
- *
- * We intentionally do NOT hard-code additional_consented_products here.
- *
- * Plaid controls which products can be added to a particular Item and
- * institution/product combination.
- *
- * The frontend/backend should request a specific supported product only
- * after iBag determines that the product is actually eligible for that
- * Item.
+ * Used for both credential-remediation update mode (no product request)
+ * and requesting additional product consent (additionalConsentedProducts)
+ * on an existing Item.
  */
-
 async function createUpdateModeLinkToken({
   userId,
   accessToken,
-  additionalConsentedProducts = [],
-  webhookUrl = null,
+  additionalConsentedProducts,
+  webhookUrl,
 } = {}) {
   if (!userId) {
-    throw new Error(
-      "createUpdateModeLinkToken requires userId"
-    );
+    throw new Error("userId is required");
   }
-
   if (!accessToken) {
-    throw new Error(
-      "createUpdateModeLinkToken requires accessToken"
-    );
+    throw new Error("accessToken is required");
   }
 
   const request = {
     user: {
-      client_user_id:
-        String(userId),
+      client_user_id: String(userId),
     },
-
-    client_name:
-      "iBag",
-
-    access_token:
-      accessToken,
-
-    country_codes: [
-      "US",
-    ],
-
-    language:
-      "en",
+    client_name: "iBag",
+    access_token: accessToken,
+    country_codes: PLAID_COUNTRY_CODES,
+    language: PLAID_LANGUAGE,
+    webhook: webhookUrl || undefined,
   };
 
-  /*
-   * Only explicitly requested products are included.
-   *
-   * Never silently request the entire iBag product catalog.
-   */
   if (
-    Array.isArray(
-      additionalConsentedProducts
-    ) &&
+    Array.isArray(additionalConsentedProducts) &&
     additionalConsentedProducts.length > 0
   ) {
-    request.additional_consented_products =
-      additionalConsentedProducts;
+    request.additional_consented_products = additionalConsentedProducts;
   }
 
-  if (webhookUrl) {
-    request.webhook =
-      webhookUrl;
-  }
-
-  try {
-    const response =
-      await plaidClient.linkTokenCreate(
-        request
-      );
-
-    return {
-      link_token:
-        response.data.link_token,
-
-      expiration:
-        response.data.expiration,
-
-      request_id:
-        response.data.request_id,
-    };
-  } catch (error) {
-    throw normalizePlaidError(
-      error,
-      "PLAID_UPDATE_MODE_LINK_TOKEN_CREATE_FAILED"
-    );
-  }
-}
-
-/*
- * --------------------------------------------------------------------------
- * ITEM
- * --------------------------------------------------------------------------
- */
-
-async function getItem(
-  accessToken
-) {
-  if (!accessToken) {
-    throw new Error(
-      "getItem requires accessToken"
-    );
-  }
-
-  try {
-    const response =
-      await plaidClient.itemGet({
-        access_token:
-          accessToken,
-      });
-
-    return response.data;
-  } catch (error) {
-    throw normalizePlaidError(
-      error,
-      "PLAID_ITEM_GET_FAILED"
-    );
-  }
-}
-
-/*
- * --------------------------------------------------------------------------
- * PRODUCT COVERAGE
- * --------------------------------------------------------------------------
- *
- * This is observational.
- *
- * iBag never converts "supported" into "available".
- */
-
-async function getProductCoverage(
-  accessToken
-) {
-  const itemData =
-    await getItem(
-      accessToken
-    );
-
-  const item =
-    itemData.item ||
-    itemData;
-
-  const products =
-    Array.isArray(
-      item.products
-    )
-      ? item.products
-      : [];
-
-  const billedProducts =
-    Array.isArray(
-      item.billed_products
-    )
-      ? item.billed_products
-      : [];
-
-  const availableProducts =
-    Array.isArray(
-      item.available_products
-    )
-      ? item.available_products
-      : [];
-
-  const consentedProducts =
-    Array.isArray(
-      item.consented_products
-    )
-      ? item.consented_products
-      : [];
+  const response = await plaidClient.linkTokenCreate(request);
 
   return {
-    requested:
-      PLAID_PRODUCTS,
-
-    supportedByIbag:
-      Object.keys(
-        IBAG_PLAID_PRODUCTS
-      ),
-
-    initialized:
-      products,
-
-    billed:
-      billedProducts,
-
-    available:
-      availableProducts,
-
-    consented:
-      consentedProducts,
-
-    balance: {
-      available:
-        true,
-
-      reason:
-        "Balance is retrieved through accountsBalanceGet.",
-    },
-
-    specialized:
-      PLAID_SPECIALIZED_PRODUCTS,
+    link_token: response.data.link_token,
+    expiration: response.data.expiration,
+    request_id: response.data.request_id,
   };
 }
 
-/*
- * --------------------------------------------------------------------------
- * AUTH
- * --------------------------------------------------------------------------
+/**
+ * FIX: did not exist. sync.js's discoverItemCapabilities() calls this as
+ * the first step inside every syncOneItem() DB transaction — without it,
+ * every single sync threw immediately and rolled back before ever
+ * reaching transaction data.
+ *
+ * Returns the raw Plaid Item object (item_id, institution_id, products,
+ * billed_products, available_products, consented_products,
+ * consent_expiration_time, etc.) as a thin passthrough. Deliberately does
+ * NOT map that into iBag's domain/evidence-state model — that logic
+ * already exists in sync.js and stays defined there, in one place, so it
+ * can't drift out of sync with itself.
  */
-
-async function getAuth(
-  accessToken
-) {
-  if (!accessToken) {
-    throw new Error(
-      "getAuth requires accessToken"
-    );
-  }
-
-  try {
-    const response =
-      await plaidClient.authGet({
-        access_token:
-          accessToken,
-      });
-
-    return response.data;
-  } catch (error) {
-    throw normalizePlaidError(
-      error,
-      "PLAID_AUTH_GET_FAILED"
-    );
-  }
+async function getItem(accessToken) {
+  const response = await plaidClient.itemGet({
+    access_token: accessToken,
+  });
+  return response.data;
 }
 
-/*
- * --------------------------------------------------------------------------
- * BALANCE
- * --------------------------------------------------------------------------
+/**
+ * FIX: did not exist. index.js's /plaid/product-coverage route imports
+ * and calls this directly.
  */
+async function getProductCoverage(accessToken) {
+  const data = await getItem(accessToken);
+  const item = data.item || data;
 
-async function getBalances(
-  accessToken
-) {
-  if (!accessToken) {
-    throw new Error(
-      "getBalances requires accessToken"
-    );
-  }
-
-  try {
-    const response =
-      await plaidClient.accountsBalanceGet({
-        access_token:
-          accessToken,
-      });
-
-    return response.data;
-  } catch (error) {
-    throw normalizePlaidError(
-      error,
-      "PLAID_BALANCE_GET_FAILED"
-    );
-  }
-}
-
-/*
- * --------------------------------------------------------------------------
- * TRANSACTIONS
- * --------------------------------------------------------------------------
- */
-
-async function syncTransactions(
-  accessToken,
-  cursor = null
-) {
-  if (!accessToken) {
-    throw new Error(
-      "syncTransactions requires accessToken"
-    );
-  }
-
-  const request = {
-    access_token:
-      accessToken,
+  return {
+    item_id: item.item_id || null,
+    institution_id: item.institution_id || null,
+    products: item.products || [],
+    billed_products: item.billed_products || [],
+    available_products: item.available_products || [],
+    consented_products: item.consented_products || [],
+    consent_expiration_time: item.consent_expiration_time || null,
   };
-
-  if (cursor) {
-    request.cursor =
-      cursor;
-  }
-
-  try {
-    const response =
-      await plaidClient.transactionsSync(
-        request
-      );
-
-    return response.data;
-  } catch (error) {
-    throw normalizePlaidError(
-      error,
-      "PLAID_TRANSACTIONS_SYNC_FAILED"
-    );
-  }
 }
 
-/*
- * --------------------------------------------------------------------------
- * IDENTITY
- * --------------------------------------------------------------------------
+/**
+ * FIX: did not exist. index.js imports this (currently unused in the
+ * routes shown, but importing an undefined name still breaks the
+ * require() at module load).
  */
-
-async function getIdentity(
-  accessToken
-) {
-  if (!accessToken) {
-    throw new Error(
-      "getIdentity requires accessToken"
-    );
-  }
-
-  try {
-    const response =
-      await plaidClient.identityGet({
-        access_token:
-          accessToken,
-      });
-
-    return response.data;
-  } catch (error) {
-    throw normalizePlaidError(
-      error,
-      "PLAID_IDENTITY_GET_FAILED"
-    );
-  }
+async function getBalances(accessToken) {
+  const response = await plaidClient.accountsBalanceGet({
+    access_token: accessToken,
+  });
+  return response.data;
 }
 
-/*
- * --------------------------------------------------------------------------
- * LIABILITIES
- * --------------------------------------------------------------------------
+/**
+ * FIX: did not exist. sync.js's observeDomain() calls this for the
+ * 'auth' domain.
  */
-
-async function getLiabilities(
-  accessToken
-) {
-  if (!accessToken) {
-    throw new Error(
-      "getLiabilities requires accessToken"
-    );
-  }
-
-  try {
-    const response =
-      await plaidClient.liabilitiesGet({
-        access_token:
-          accessToken,
-      });
-
-    return response.data;
-  } catch (error) {
-    throw normalizePlaidError(
-      error,
-      "PLAID_LIABILITIES_GET_FAILED"
-    );
-  }
+async function getAuth(accessToken) {
+  const response = await plaidClient.authGet({
+    access_token: accessToken,
+  });
+  return response.data;
 }
 
-/*
- * --------------------------------------------------------------------------
- * INVESTMENTS
- * --------------------------------------------------------------------------
+/**
+ * FIX: did not exist. sync.js's observeDomain() calls this for the
+ * 'identity' domain.
  */
-
-async function getInvestments(
-  accessToken
-) {
-  if (!accessToken) {
-    throw new Error(
-      "getInvestments requires accessToken"
-    );
-  }
-
-  try {
-    const response =
-      await plaidClient.investmentsHoldingsGet({
-        access_token:
-          accessToken,
-      });
-
-    return response.data;
-  } catch (error) {
-    throw normalizePlaidError(
-      error,
-      "PLAID_INVESTMENTS_HOLDINGS_GET_FAILED"
-    );
-  }
+async function getIdentity(accessToken) {
+  const response = await plaidClient.identityGet({
+    access_token: accessToken,
+  });
+  return response.data;
 }
 
-/*
- * --------------------------------------------------------------------------
- * ASSET REPORT
- * --------------------------------------------------------------------------
+/**
+ * FIX: did not exist. sync.js's observeDomain() calls this for the
+ * 'liabilities' domain.
  */
-
-async function createAssetReport({
-  accessToken,
-  daysRequested = 90,
-  options = {},
-} = {}) {
-  if (!accessToken) {
-    throw new Error(
-      "createAssetReport requires accessToken"
-    );
-  }
-
-  const request = {
-    access_tokens: [
-      accessToken,
-    ],
-
-    days_requested:
-      daysRequested,
-  };
-
-  if (
-    options &&
-    typeof options === "object" &&
-    !Array.isArray(options)
-  ) {
-    request.options =
-      options;
-  }
-
-  try {
-    const response =
-      await plaidClient.assetReportCreate(
-        request
-      );
-
-    return response.data;
-  } catch (error) {
-    throw normalizePlaidError(
-      error,
-      "PLAID_ASSET_REPORT_CREATE_FAILED"
-    );
-  }
+async function getLiabilities(accessToken) {
+  const response = await plaidClient.liabilitiesGet({
+    access_token: accessToken,
+  });
+  return response.data;
 }
 
-async function getAssetReport(
-  assetReportToken
-) {
-  if (!assetReportToken) {
-    throw new Error(
-      "getAssetReport requires assetReportToken"
-    );
-  }
-
-  try {
-    const response =
-      await plaidClient.assetReportGet({
-        asset_report_token:
-          assetReportToken,
-      });
-
-    return response.data;
-  } catch (error) {
-    throw normalizePlaidError(
-      error,
-      "PLAID_ASSET_REPORT_GET_FAILED"
-    );
-  }
-}
-
-/*
- * --------------------------------------------------------------------------
- * STATEMENTS
- * --------------------------------------------------------------------------
+/**
+ * FIX: did not exist. sync.js's observeDomain() calls this for the
+ * 'investments' domain. Returns holdings only (investments/holdings/get)
+ * — investment TRANSACTIONS is a separate, separately-paginated Plaid
+ * endpoint not wired up yet (Phase F item), so this is not silently
+ * folded in here.
  */
-
-async function getStatements(
-  accessToken
-) {
-  if (!accessToken) {
-    throw new Error(
-      "getStatements requires accessToken"
-    );
-  }
-
-  try {
-    const response =
-      await plaidClient.statementsList({
-        access_token:
-          accessToken,
-      });
-
-    return response.data;
-  } catch (error) {
-    throw normalizePlaidError(
-      error,
-      "PLAID_STATEMENTS_LIST_FAILED"
-    );
-  }
+async function getInvestments(accessToken) {
+  const response = await plaidClient.investmentsHoldingsGet({
+    access_token: accessToken,
+  });
+  return response.data;
 }
 
-/*
- * --------------------------------------------------------------------------
- * ERROR NORMALIZATION
- * --------------------------------------------------------------------------
+/**
+ * FIX: did not exist. sync.js's observeDomain() calls this for the
+ * 'statements' domain.
  */
-
-function normalizePlaidError(
-  error,
-  fallbackCode
-) {
-  const responseData =
-    error?.response?.data ||
-    {};
-
-  const normalized =
-    new Error(
-      responseData.error_message ||
-        error?.message ||
-        fallbackCode
-    );
-
-  normalized.code =
-    responseData.error_code ||
-    fallbackCode;
-
-  normalized.type =
-    responseData.error_type ||
-    null;
-
-  normalized.status =
-    error?.response?.status ||
-    null;
-
-  normalized.requestId =
-    responseData.request_id ||
-    error?.response?.headers
-      ?.["plaid-request-id"] ||
-    null;
-
-  normalized.displayMessage =
-    responseData.display_message ||
-    null;
-
-  normalized.cause =
-    error;
-
-  return normalized;
+async function getStatements(accessToken) {
+  const response = await plaidClient.statementsList({
+    access_token: accessToken,
+  });
+  return response.data;
 }
 
-/*
- * --------------------------------------------------------------------------
- * EXPORTS
- * --------------------------------------------------------------------------
+/**
+ * Returns the authoritative eight-product configuration.
+ *
+ * This is useful for backend diagnostics and the dashboard's
+ * product-coverage intelligence.
  */
-
+function getPlaidProducts() {
+  return [...PLAID_PRODUCTS];
+}
 module.exports = {
   plaidClient,
-
   PLAID_PRODUCTS,
-
-  PLAID_REQUIRED_PRODUCTS,
-
-  PLAID_OPTIONAL_PRODUCTS,
-
-  PLAID_SPECIALIZED_PRODUCTS,
-
-  IBAG_PLAID_PRODUCTS,
-
+  PLAID_COUNTRY_CODES,
   createLinkToken,
-
   createUpdateModeLinkToken,
-
-  getItem,
-
   getProductCoverage,
-
-  getAuth,
-
+  getItem,
   getBalances,
-
-  syncTransactions,
-
+  getAuth,
   getIdentity,
-
   getLiabilities,
-
   getInvestments,
-
-  createAssetReport,
-
-  getAssetReport,
-
   getStatements,
-
-  normalizePlaidError,
+  getPlaidProducts,
 };
