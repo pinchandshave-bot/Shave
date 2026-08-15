@@ -29,21 +29,53 @@ const MAX_PAGINATION_RESTARTS = 3;
  * iBAG PLAID SYNCHRONIZATION ENGINE
  * ==========================================================================
  *
- * Core rules:
+ * PRINCIPLES
  *
- * 1. Plaid is the source of truth for connected financial data.
- * 2. Database rows are synchronized from Plaid; they are never fabricated.
- * 3. Transactions are keyed by Plaid transaction_id.
- * 4. Accounts are keyed by Plaid account_id within a Plaid Item.
- * 5. Transactions /sync deltas are fully consumed before the cursor advances.
- * 6. Removed transactions remain represented locally with status=removed.
- * 7. Pending transactions are never treated as authoritative Round-Up events.
- * 8. Round-Ups are analytical only.
- * 9. No money movement occurs anywhere in this module.
- * 10. A capability is never represented as observed financial data.
+ * 1. Plaid is the source of truth for connected financial observations.
+ * 2. Database financial records are synchronized only from Plaid responses.
+ * 3. No transaction, account, balance, holding, liability, or identity
+ *    observation is fabricated.
+ * 4. Transactions are linked through:
  *
- * This implementation also exposes account-mapping diagnostics so that a
- * successful Plaid response cannot silently become an empty dashboard.
+ *       Plaid Item
+ *          ↓
+ *       local account
+ *          ↓
+ *       local transaction
+ *
+ * 5. Plaid transaction_id is the canonical transaction identifier.
+ * 6. Plaid account_id is resolved through the local account belonging to
+ *    the same Plaid Item.
+ * 7. Every complete transactions/sync delta is consumed before the cursor
+ *    advances.
+ * 8. Removed transactions remain represented locally with status=removed.
+ * 9. Pending transactions are not authoritative Round-Up events.
+ * 10. Round-Ups remain analytical only.
+ * 11. No money movement occurs anywhere in this module.
+ *
+ * TRANSACTIONAL ARCHITECTURE
+ *
+ * Canonical transaction synchronization is isolated from secondary domain
+ * observation.
+ *
+ *       BEGIN
+ *         ↓
+ *       Plaid transaction delta
+ *         ↓
+ *       account mapping
+ *         ↓
+ *       transaction writes
+ *         ↓
+ *       roundup reconciliation
+ *         ↓
+ *       cursor update
+ *         ↓
+ *       COMMIT
+ *
+ * Only after that COMMIT do balance and other domain observations execute.
+ *
+ * This prevents a failure in a secondary observation from poisoning the
+ * PostgreSQL transaction containing canonical transaction data.
  */
 
 /*
@@ -259,7 +291,7 @@ async function discoverItemCapabilities(
 
 /*
  * ==========================================================================
- * TRANSACTION SYNC
+ * TRANSACTION SYNC PAGINATION
  * ==========================================================================
  */
 
@@ -343,7 +375,7 @@ async function fetchTransactionUpdates(
       console.warn(
         [
           'Plaid transaction set changed during pagination.',
-          `Restarting from original cursor.`,
+          'Restarting from original cursor.',
           `Attempt ${restartCount}/${MAX_PAGINATION_RESTARTS}.`,
         ].join(' ')
       );
@@ -392,9 +424,6 @@ async function reconcileRoundup(
   const transaction =
     result.rows[0];
 
-  /*
-   * Pending transactions are never authoritative.
-   */
   if (transaction.pending === true) {
     await client.query(
       `
@@ -514,7 +543,7 @@ async function reconcileRoundup(
 
 /*
  * ==========================================================================
- * PENDING -> POSTED RECONCILIATION
+ * PENDING → POSTED RECONCILIATION
  * ==========================================================================
  */
 
@@ -563,13 +592,31 @@ async function upsertTransaction(
 ) {
   if (!accountId) {
     throw new Error(
-      `Cannot persist transaction ${txn.transaction_id}: missing local account mapping for Plaid account ${txn.account_id}`
+      [
+        `Cannot persist transaction ${txn.transaction_id}.`,
+        `Missing local account mapping for Plaid account ${txn.account_id}.`,
+      ].join(' ')
+    );
+  }
+
+  if (!txn.transaction_id) {
+    throw new Error(
+      'Cannot persist Plaid transaction without transaction_id'
+    );
+  }
+
+  if (!txn.account_id) {
+    throw new Error(
+      `Cannot persist Plaid transaction ${txn.transaction_id} without account_id`
     );
   }
 
   /*
-   * If a posted transaction references an existing pending transaction,
-   * convert the pending local row rather than creating a duplicate.
+   * A posted transaction may replace an earlier pending transaction.
+   *
+   * The pending local record is converted in-place so the transaction
+   * history remains coherent and Round-Up reconciliation operates on the
+   * authoritative posted transaction.
    */
   if (!txn.pending) {
     const pendingLocalId =
@@ -621,6 +668,12 @@ async function upsertTransaction(
             pendingLocalId,
           ]
         );
+
+      if (!result.rows.length) {
+        throw new Error(
+          `Posted transaction replacement update returned no row for ${txn.transaction_id}`
+        );
+      }
 
       return result.rows[0].id;
     }
@@ -723,6 +776,12 @@ async function upsertTransaction(
       ]
     );
 
+  if (!result.rows.length) {
+    throw new Error(
+      `Transaction upsert returned no row for ${txn.transaction_id}`
+    );
+  }
+
   return result.rows[0].id;
 }
 
@@ -736,6 +795,12 @@ async function markTransactionRemoved(
   client,
   removed
 ) {
+  if (!removed?.transaction_id) {
+    throw new Error(
+      'Cannot process removed transaction without transaction_id'
+    );
+  }
+
   const result =
     await client.query(
       `
@@ -790,10 +855,15 @@ async function markTransactionRemoved(
  * ==========================================================================
  *
  * IMPORTANT:
- * accounts.updated_at DOES NOT EXIST in the supplied production schema.
  *
- * Therefore this update intentionally touches only columns that actually
- * exist in accounts.
+ * This function is intentionally executed AFTER the canonical transaction
+ * transaction has committed.
+ *
+ * Therefore a balance observation failure cannot roll back transaction
+ * synchronization.
+ *
+ * Only columns known to exist in the supplied production accounts schema
+ * are touched here.
  */
 
 async function syncBalances(
@@ -1055,8 +1125,14 @@ function countDomainObservations(
 
 /*
  * ==========================================================================
- * DOMAIN ORCHESTRATION
+ * SECONDARY DOMAIN ORCHESTRATION
  * ==========================================================================
+ *
+ * This executes only AFTER canonical transaction synchronization has
+ * committed.
+ *
+ * A failure in a secondary domain is represented as an observation failure.
+ * It cannot roll back canonical transactions.
  */
 
 async function synchronizeDomains(
@@ -1067,6 +1143,11 @@ async function synchronizeDomains(
 ) {
   const domains = {};
 
+  /*
+   * BALANCES
+   *
+   * Balance persistence is intentionally outside the canonical transaction.
+   */
   try {
     domains.balance =
       await syncBalances(
@@ -1084,6 +1165,14 @@ async function synchronizeDomains(
       error_message:
         getPlaidErrorMessage(error),
     };
+
+    console.error(
+      [
+        'Plaid balance observation failed.',
+        `item=${itemId}`,
+        getPlaidErrorMessage(error),
+      ].join(' ')
+    );
   }
 
   const observationDomains = [
@@ -1145,7 +1234,18 @@ async function syncOneItem(item) {
   const client =
     await pool.connect();
 
+  let capabilities = null;
+  let accountRows = null;
+  let transactionResult = null;
+  let userId = null;
+
   try {
+    /*
+     * ----------------------------------------------------------------------
+     * BEGIN CANONICAL TRANSACTION
+     * ----------------------------------------------------------------------
+     */
+
     await client.query(
       'BEGIN'
     );
@@ -1161,7 +1261,7 @@ async function syncOneItem(item) {
      * ----------------------------------------------------------------------
      */
 
-    const capabilities =
+    capabilities =
       await discoverItemCapabilities(
         accessToken
       );
@@ -1188,7 +1288,7 @@ async function syncOneItem(item) {
       );
     }
 
-    const userId =
+    userId =
       userResult.rows[0].user_id;
 
     /*
@@ -1196,11 +1296,13 @@ async function syncOneItem(item) {
      * ACCOUNT MAP
      * ----------------------------------------------------------------------
      *
-     * We now explicitly inspect the local account map before attempting
-     * transaction persistence.
+     * The account map is scoped strictly to this Plaid Item.
+     *
+     * Plaid account ID can therefore only resolve to an account belonging
+     * to the Item being synchronized.
      */
 
-    const accountRows =
+    accountRows =
       await client.query(
         `
           SELECT
@@ -1221,6 +1323,20 @@ async function syncOneItem(item) {
       const account
       of accountRows.rows
     ) {
+      if (
+        accountMap[
+          account.plaid_account_id
+        ]
+      ) {
+        throw new Error(
+          [
+            'Duplicate local Plaid account mapping detected.',
+            `item=${item.plaid_item_id}`,
+            `plaid_account_id=${account.plaid_account_id}`,
+          ].join(' ')
+        );
+      }
+
       accountMap[
         account.plaid_account_id
       ] = account.id;
@@ -1228,20 +1344,25 @@ async function syncOneItem(item) {
 
     /*
      * ----------------------------------------------------------------------
-     * TRANSACTIONS
+     * TRANSACTION DELTA
      * ----------------------------------------------------------------------
      */
 
-    let transactionResult = {
+    transactionResult = {
       state: 'not_available',
+
       added: 0,
       modified: 0,
       removed: 0,
+
       skipped_missing_accounts: 0,
+
       missing_account_ids: [],
+
       plaid_added_received: 0,
       plaid_modified_received: 0,
       plaid_removed_received: 0,
+
       nextCursor:
         item.cursor || null,
     };
@@ -1274,8 +1395,11 @@ async function syncOneItem(item) {
       let syncedRemoved = 0;
 
       /*
+       * --------------------------------------------------------------------
        * ADDED
+       * --------------------------------------------------------------------
        */
+
       for (
         const txn
         of added
@@ -1299,7 +1423,22 @@ async function syncOneItem(item) {
             ].join(' ')
           );
 
-          continue;
+          /*
+           * Do NOT advance the cursor past an unpersistable transaction.
+           *
+           * The entire canonical transaction synchronization is atomic.
+           * Throwing here causes the transaction to roll back and leaves
+           * the existing cursor unchanged.
+           */
+          throw new Error(
+            [
+              'Transaction synchronization aborted because Plaid returned',
+              'a transaction for an account that does not exist locally.',
+              `item=${item.plaid_item_id}`,
+              `plaid_account_id=${txn.account_id}`,
+              `transaction_id=${txn.transaction_id}`,
+            ].join(' ')
+          );
         }
 
         const transactionId =
@@ -1319,8 +1458,11 @@ async function syncOneItem(item) {
       }
 
       /*
+       * --------------------------------------------------------------------
        * MODIFIED
+       * --------------------------------------------------------------------
        */
+
       for (
         const txn
         of modified
@@ -1344,7 +1486,15 @@ async function syncOneItem(item) {
             ].join(' ')
           );
 
-          continue;
+          throw new Error(
+            [
+              'Transaction synchronization aborted because Plaid returned',
+              'a modified transaction for an account that does not exist locally.',
+              `item=${item.plaid_item_id}`,
+              `plaid_account_id=${txn.account_id}`,
+              `transaction_id=${txn.transaction_id}`,
+            ].join(' ')
+          );
         }
 
         const transactionId =
@@ -1364,8 +1514,11 @@ async function syncOneItem(item) {
       }
 
       /*
+       * --------------------------------------------------------------------
        * REMOVED
+       * --------------------------------------------------------------------
        */
+
       for (
         const removedTxn
         of removed
@@ -1382,13 +1535,19 @@ async function syncOneItem(item) {
       }
 
       /*
-       * IMPORTANT:
+       * --------------------------------------------------------------------
+       * CURSOR ADVANCEMENT
+       * --------------------------------------------------------------------
        *
-       * The cursor is still advanced after processing the complete Plaid
-       * delta. A transaction that cannot be mapped is not fabricated.
+       * The cursor is advanced only after:
        *
-       * The diagnostic response makes the mismatch visible.
+       *   added      → persisted
+       *   modified   → persisted
+       *   removed    → reconciled
+       *
+       * If anything above throws, execution never reaches this update.
        */
+
       await client.query(
         `
           UPDATE plaid_items
@@ -1414,9 +1573,7 @@ async function syncOneItem(item) {
           syncedRemoved,
 
         skipped_missing_accounts:
-          missingAccountIds.size
-            ? [...missingAccountIds].length
-            : 0,
+          missingAccountIds.size,
 
         missing_account_ids:
           [...missingAccountIds],
@@ -1436,8 +1593,29 @@ async function syncOneItem(item) {
 
     /*
      * ----------------------------------------------------------------------
-     * OTHER FINANCIAL DOMAINS
+     * COMMIT CANONICAL FINANCIAL TRANSACTION
      * ----------------------------------------------------------------------
+     *
+     * IMPORTANT:
+     *
+     * Nothing involving balances, identity, liabilities, investments,
+     * statements, or other secondary domains is allowed to execute before
+     * this commit.
+     */
+
+    await client.query(
+      'COMMIT'
+    );
+
+    /*
+     * ----------------------------------------------------------------------
+     * SECONDARY DOMAIN OBSERVATION
+     * ----------------------------------------------------------------------
+     *
+     * This is deliberately outside the transaction above.
+     *
+     * If balance synchronization fails, canonical transactions remain
+     * committed.
      */
 
     const domainResults =
@@ -1448,14 +1626,12 @@ async function syncOneItem(item) {
         capabilities
       );
 
-    await client.query(
-      'COMMIT'
-    );
-
     /*
      * ----------------------------------------------------------------------
      * SUCCESS RECORD
      * ----------------------------------------------------------------------
+     *
+     * At this point the canonical transaction commit has already succeeded.
      */
 
     await pool.query(
@@ -1466,7 +1642,8 @@ async function syncOneItem(item) {
           added_count = $1,
           modified_count = $2,
           removed_count = $3,
-          status = 'success'
+          status = 'success',
+          error_message = NULL
         WHERE id = $4
       `,
       [
@@ -1478,6 +1655,8 @@ async function syncOneItem(item) {
     );
 
     return {
+      status: 'success',
+
       plaid_item_id:
         item.plaid_item_id,
 
@@ -1518,9 +1697,22 @@ async function syncOneItem(item) {
         domainResults,
     };
   } catch (error) {
-    await client.query(
-      'ROLLBACK'
-    );
+    /*
+     * ----------------------------------------------------------------------
+     * ROLLBACK
+     * ----------------------------------------------------------------------
+     */
+
+    try {
+      await client.query(
+        'ROLLBACK'
+      );
+    } catch (rollbackError) {
+      console.error(
+        'Transaction rollback failed:',
+        rollbackError
+      );
+    }
 
     const detail =
       getPlaidErrorMessage(error);
@@ -1529,6 +1721,15 @@ async function syncOneItem(item) {
       `Plaid Item ${item.plaid_item_id} sync failed:`,
       error
     );
+
+    /*
+     * ----------------------------------------------------------------------
+     * ERROR RECORD
+     * ----------------------------------------------------------------------
+     *
+     * A sync is never marked successful when the canonical transaction
+     * transaction fails.
+     */
 
     await pool.query(
       `
@@ -1546,6 +1747,8 @@ async function syncOneItem(item) {
     );
 
     return {
+      status: 'error',
+
       plaid_item_id:
         item.plaid_item_id,
 
@@ -1554,6 +1757,13 @@ async function syncOneItem(item) {
 
       error_code:
         getPlaidErrorCode(error),
+
+      transactions:
+        transactionResult,
+
+      local_account_count:
+        accountRows?.rows?.length ??
+        0,
     };
   } finally {
     client.release();
@@ -1598,6 +1808,7 @@ async function runSync(
     const failures =
       results.filter(
         result =>
+          result.status === 'error' ||
           result.error
       );
 
