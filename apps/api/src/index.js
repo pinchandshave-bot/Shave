@@ -44,6 +44,17 @@ const {
   getCashFlow,
 } = require("./me");
 
+/*
+ * FIX: webhook.js's plaidWebhook handler existed but was never imported
+ * or mounted, and verifyPlaidWebhook() requires req.rawBody, which
+ * nothing was setting. Plaid had a webhook URL registered (once
+ * plaidClient.js was fixed to pass one through) but calling it would
+ * have hit the 404 handler below — and even with the route mounted,
+ * signature verification would have failed with rawBody undefined.
+ * Both are fixed below.
+ */
+const { plaidWebhook } = require("./webhook");
+
 const app = express();
 
 /*
@@ -68,7 +79,22 @@ app.use(
   }),
 );
 
-app.use(express.json());
+/*
+ * FIX: express.json() previously ran with no verify option, so
+ * req.rawBody was never populated. webhook.js's verifyPlaidWebhook()
+ * hashes req.rawBody and compares it against the SHA-256 claim inside
+ * Plaid's verification JWT — without the exact raw bytes, that check
+ * cannot run. The verify callback below captures the raw buffer
+ * alongside the normal JSON parsing, so every other route is
+ * unaffected (req.body still parses exactly as before).
+ */
+app.use(
+  express.json({
+    verify: (req, res, buf) => {
+      req.rawBody = buf;
+    },
+  }),
+);
 app.use(express.static("public"));
 
 /*
@@ -1129,6 +1155,23 @@ app.post(
       });
     }
   },
+);
+
+/*
+ * --------------------------------------------------------------------------
+ * PLAID WEBHOOK
+ * --------------------------------------------------------------------------
+ *
+ * FIX: this route did not exist. webhook.js's plaidWebhook handler was
+ * fully implemented (JWT signature verification, SYNC_UPDATES_AVAILABLE
+ * → syncOneItem trigger) but was never mounted anywhere, so Plaid calling
+ * PLAID_WEBHOOK_URL would have hit the 404 handler below regardless of
+ * whether Plaid actually had a webhook URL registered.
+ */
+
+app.post(
+  "/plaid/webhook",
+  plaidWebhook,
 );
 
 /*
