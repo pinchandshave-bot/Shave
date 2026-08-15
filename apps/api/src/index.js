@@ -1,34 +1,37 @@
-require('dotenv').config();
+require("dotenv").config();
 
-const express = require('express');
-const cors = require('cors');
-const rateLimit = require('express-rate-limit');
+const express = require("express");
+const cors = require("cors");
+const rateLimit =
+  require("express-rate-limit");
 
-const pool = require('./db');
+const pool = require("./db");
 
 const {
   createLinkToken,
   createUpdateModeLinkToken,
-  getProductCoverage,
+  createAdditionalConsentLinkToken,
+  createSpecializedProductLinkToken,
+  normalizePlaidError,
   plaidClient,
-} = require('./plaidClient');
+} = require("./plaidClient");
 
 const {
   encrypt,
   decrypt,
-} = require('./crypto');
+} = require("./crypto");
 
 const {
   requireAuth,
   requireInternalSecret,
   signup,
   login,
-} = require('./auth');
+} = require("./auth");
 
 const {
   runSync,
   syncOneItem,
-} = require('./sync');
+} = require("./sync");
 
 const {
   getMe,
@@ -41,418 +44,373 @@ const {
   getNetWorth,
   getIncome,
   getCashFlow,
-} = require('./me');
+} = require("./me");
 
-const app = express();
+const app =
+  express();
 
-/*
- * --------------------------------------------------------------------------
- * RENDER / REVERSE PROXY
- * --------------------------------------------------------------------------
- */
 
-app.set('trust proxy', 1);
+/* ============================================================================
+ * PROXY
+ * ========================================================================== */
 
-/*
- * --------------------------------------------------------------------------
+app.set(
+  "trust proxy",
+  1
+);
+
+
+/* ============================================================================
  * CORS
- * --------------------------------------------------------------------------
- */
+ * ========================================================================== */
 
 app.use(
   cors({
     origin:
       process.env.FRONTEND_ORIGIN ||
-      'https://shave.onrender.com',
-  }),
+      "https://shave.onrender.com",
+  })
 );
 
-app.use(express.json());
-app.use(express.static('public'));
+app.use(
+  express.json({
+    limit: "1mb",
+  })
+);
 
-/*
- * --------------------------------------------------------------------------
- * AUTHENTICATION RATE LIMITER
- * --------------------------------------------------------------------------
- */
+app.use(
+  express.static("public")
+);
 
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 8,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: {
-    status: 'error',
-    message:
-      'Too many attempts. Try again later.',
-  },
-});
 
-/*
- * --------------------------------------------------------------------------
- * SERVICE / HEALTH
- * --------------------------------------------------------------------------
- */
+/* ============================================================================
+ * RATE LIMITING
+ * ========================================================================== */
 
-app.get('/', (req, res) => {
-  res.json({
-    status: 'ok',
-    service: 'ibag-api',
-    message: 'iBag API is running',
+const authLimiter =
+  rateLimit({
+    windowMs:
+      15 * 60 * 1000,
+
+    max:
+      8,
+
+    standardHeaders:
+      true,
+
+    legacyHeaders:
+      false,
+
+    message: {
+      status:
+        "error",
+
+      message:
+        "Too many attempts. Try again later.",
+    },
   });
-});
 
-app.get('/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    service: 'ibag-api',
-    time: new Date().toISOString(),
-  });
-});
 
-app.get('/db-check', async (req, res) => {
-  try {
-    const result =
-      await pool.query(
-        `
-          SELECT
-            now() AS db_time,
-            count(*) AS user_count
-          FROM users
-        `,
-      );
+/* ============================================================================
+ * HEALTH
+ * ========================================================================== */
 
+app.get(
+  "/",
+  (req, res) => {
     return res.json({
-      status: 'ok',
-      db_time:
-        result.rows[0].db_time,
-      user_count:
-        result.rows[0].user_count,
-    });
-  } catch (err) {
-    console.error(
-      'Database check failed:',
-      err,
-    );
+      status:
+        "ok",
 
-    return res.status(500).json({
-      status: 'error',
-      message: err.message,
+      service:
+        "ibag-api",
+
+      message:
+        "iBag API is running",
     });
   }
-});
+);
 
-/*
- * --------------------------------------------------------------------------
+
+app.get(
+  "/health",
+  (req, res) => {
+    return res.json({
+      status:
+        "ok",
+
+      service:
+        "ibag-api",
+
+      time:
+        new Date().toISOString(),
+    });
+  }
+);
+
+
+app.get(
+  "/db-check",
+  async (req, res) => {
+    try {
+      const result =
+        await pool.query(
+          `
+            SELECT
+              now() AS db_time,
+              count(*) AS user_count
+            FROM users
+          `
+        );
+
+      return res.json({
+        status:
+          "ok",
+
+        db_time:
+          result.rows[0]
+            .db_time,
+
+        user_count:
+          result.rows[0]
+            .user_count,
+      });
+    } catch (err) {
+      console.error(
+        "Database check failed:",
+        err
+      );
+
+      return res.status(500).json({
+        status:
+          "error",
+
+        message:
+          err.message,
+      });
+    }
+  }
+);
+
+
+/* ============================================================================
  * AUTHENTICATION
- * --------------------------------------------------------------------------
- */
+ * ========================================================================== */
 
 app.post(
-  '/auth/signup',
+  "/auth/signup",
   authLimiter,
-  signup,
+  signup
 );
 
 app.post(
-  '/auth/login',
+  "/auth/login",
   authLimiter,
-  login,
+  login
 );
 
-/*
- * --------------------------------------------------------------------------
- * AUTHENTICATED USER / DASHBOARD
- * --------------------------------------------------------------------------
- */
+
+/* ============================================================================
+ * USER / DASHBOARD
+ * ========================================================================== */
 
 app.get(
-  '/me',
+  "/me",
   requireAuth,
-  getMe,
-);
-
-app.get(
-  '/me/dashboard',
-  requireAuth,
-  getDashboard,
+  getMe
 );
 
 app.get(
-  '/me/summary',
+  "/me/dashboard",
   requireAuth,
-  getSummary,
+  getDashboard
 );
 
 app.get(
-  '/me/accounts',
+  "/me/summary",
   requireAuth,
-  getAccounts,
+  getSummary
 );
 
 app.get(
-  '/me/transactions',
+  "/me/accounts",
   requireAuth,
-  getTransactions,
+  getAccounts
 );
 
 app.get(
-  '/me/roundups',
+  "/me/transactions",
   requireAuth,
-  getRoundups,
+  getTransactions
 );
 
 app.get(
-  '/me/insights',
+  "/me/roundups",
   requireAuth,
-  getInsights,
+  getRoundups
 );
 
 app.get(
-  '/me/net-worth',
+  "/me/insights",
   requireAuth,
-  getNetWorth,
+  getInsights
 );
 
 app.get(
-  '/me/income',
+  "/me/net-worth",
   requireAuth,
-  getIncome,
+  getNetWorth
 );
 
 app.get(
-  '/me/cash-flow',
+  "/me/income",
   requireAuth,
-  getCashFlow,
+  getIncome
 );
 
-/*
- * --------------------------------------------------------------------------
- * PLAID - INITIAL LINK
- * --------------------------------------------------------------------------
- *
- * iBag intentionally starts with the smallest required initialization set.
- *
- * Transactions is the core Phase 1 data foundation.
- *
- * Auth and Identity are optional so institutions are not unnecessarily
- * excluded from the connection experience.
- *
- * Liabilities and Investments are handled through consent/update flows
- * rather than forcing every institution to support every product.
- */
+app.get(
+  "/me/cash-flow",
+  requireAuth,
+  getCashFlow
+);
+
+
+/* ============================================================================
+ * PLAID — INITIAL LINK
+ * ========================================================================== */
 
 app.post(
-  '/plaid/create-link-token',
+  "/plaid/create-link-token",
   requireAuth,
   async (req, res) => {
     try {
+      /*
+       * Capacity applies to active Items only.
+       *
+       * The database is authoritative.
+       */
       const activeCount =
         await pool.query(
           `
             SELECT
-              count(*)
+              COUNT(*)::int AS count
             FROM plaid_items
-            WHERE status = 'active'
+            WHERE user_id = $1
+              AND status = 'active'
           `,
+          [
+            req.user.id,
+          ]
         );
 
-      /*
-       * Preserve the existing deployment capacity boundary.
-       *
-       * This is an application capacity rule, not a Plaid product rule.
-       */
-      const CAPACITY_LIMIT = 9;
+      const CAPACITY_LIMIT =
+        Number(
+          process.env.PLAID_ITEM_CAPACITY_LIMIT ||
+          25
+        );
 
       if (
         Number(
-          activeCount.rows[0].count,
-        ) >= CAPACITY_LIMIT
+          activeCount.rows[0].count
+        ) >=
+        CAPACITY_LIMIT
       ) {
         return res.status(503).json({
-          status: 'error',
+          status:
+            "error",
+
           message:
-            'iBag is at capacity for new bank connections right now. Try again soon.',
+            "iBag is temporarily unable to add another financial connection.",
         });
       }
 
-      const response =
+      const result =
         await createLinkToken({
           userId:
             req.user.id,
-
-          webhookUrl:
-            process.env.PLAID_WEBHOOK_URL ||
-            null,
         });
 
       return res.json({
-        status: 'ok',
+        status:
+          "ok",
 
         link_token:
-          response.link_token,
+          result.link_token,
 
         expiration:
-          response.expiration,
+          result.expiration,
 
         request_id:
-          response.request_id,
-
-        initial_products:
-          response.initial_products,
+          result.request_id,
       });
     } catch (err) {
       console.error(
-        'Plaid create link token failed:',
-        err,
+        "Plaid create link token failed:",
+        err
       );
 
-      return res.status(500).json({
-        status: 'error',
+      const normalized =
+        err?.code
+          ? err
+          : normalizePlaidError(
+              err,
+              "PLAID_LINK_TOKEN_CREATE_FAILED"
+            );
 
-        message:
-          'Unable to prepare the secure Plaid connection.',
+      return res.status(
+        normalized.status >= 400 &&
+          normalized.status < 600
+          ? normalized.status
+          : 500
+      ).json({
+        status:
+          "error",
 
         code:
-          err.code || null,
+          normalized.code,
 
-        detail:
-          process.env.NODE_ENV ===
-          'production'
-            ? undefined
-            : err.message,
-
-        request_id:
-          err.requestId || null,
-      });
-    }
-  },
-);
-
-/*
- * --------------------------------------------------------------------------
- * PLAID - PRODUCT COVERAGE
- * --------------------------------------------------------------------------
- *
- * This endpoint exposes observed Plaid product state.
- *
- * It does NOT manufacture availability.
- */
-
-app.get(
-  '/plaid/items/:plaid_item_id/products',
-  requireAuth,
-  async (req, res) => {
-    try {
-      const {
-        plaid_item_id,
-      } = req.params;
-
-      const itemResult =
-        await pool.query(
-          `
-            SELECT
-              plaid_access_token_encrypted
-            FROM plaid_items
-            WHERE plaid_item_id = $1
-              AND user_id = $2
-              AND status = 'active'
-            LIMIT 1
-          `,
-          [
-            plaid_item_id,
-            req.user.id,
-          ],
-        );
-
-      if (
-        itemResult.rows.length ===
-        0
-      ) {
-        return res.status(404).json({
-          status: 'error',
-          message:
-            'Plaid Item not found for this user',
-        });
-      }
-
-      const accessToken =
-        decrypt(
-          itemResult.rows[0]
-            .plaid_access_token_encrypted,
-        );
-
-      const coverage =
-        await getProductCoverage(
-          accessToken,
-        );
-
-      return res.json({
-        status: 'ok',
-        plaid_item_id,
-        coverage,
-      });
-    } catch (err) {
-      console.error(
-        'Plaid product coverage failed:',
-        err,
-      );
-
-      return res.status(500).json({
-        status: 'error',
         message:
-          'Unable to determine Plaid product coverage.',
-        code:
-          err.code || null,
+          normalized.message,
+
+        display_message:
+          normalized.displayMessage ||
+          null,
+
         request_id:
-          err.requestId || null,
+          normalized.requestId ||
+          null,
       });
     }
-  },
+  }
 );
 
-/*
- * --------------------------------------------------------------------------
- * PLAID - UPDATE MODE
- * --------------------------------------------------------------------------
- *
- * Supports three distinct update-mode strategies:
- *
- * 1. Additional consent:
- *    Auth / Identity / Investments / Liabilities
- *
- * 2. Specialized credit products:
- *    Assets / Statements
- *
- * 3. Normal update mode:
- *    Repair credentials, permissions, account access, etc.
- *
- * Specialized products MUST NOT be placed into
- * additional_consented_products.
- */
+
+/* ============================================================================
+ * PLAID — STANDARD UPDATE MODE
+ * ========================================================================== */
 
 app.post(
-  '/plaid/create-update-link-token',
+  "/plaid/create-update-link-token",
   requireAuth,
   async (req, res) => {
     try {
       const {
         plaid_item_id,
-        products,
-        additional_consented_products,
-        statements,
-        asset_report,
-      } = req.body;
+        account_selection_enabled,
+      } =
+        req.body || {};
 
       if (!plaid_item_id) {
         return res.status(400).json({
-          status: 'error',
+          status:
+            "error",
+
           message:
-            'plaid_item_id is required',
+            "plaid_item_id is required",
         });
       }
 
-      const itemRow =
+      const itemResult =
         await pool.query(
           `
             SELECT
@@ -467,424 +425,511 @@ app.post(
           [
             plaid_item_id,
             req.user.id,
-          ],
+          ]
         );
 
       if (
-        itemRow.rows.length ===
-        0
+        itemResult.rows.length === 0
       ) {
         return res.status(404).json({
-          status: 'error',
+          status:
+            "error",
+
           message:
-            'Item not found for this user',
+            "Active Plaid Item not found for this user",
         });
       }
 
       const accessToken =
         decrypt(
-          itemRow.rows[0]
-            .plaid_access_token_encrypted,
+          itemResult.rows[0]
+            .plaid_access_token_encrypted
         );
 
-      /*
-       * Normalize caller input.
-       */
-      const requestedProducts =
-        Array.isArray(products)
-          ? products
-          : [];
-
-      const requestedConsent =
-        Array.isArray(
-          additional_consented_products,
-        )
-          ? additional_consented_products
-          : [];
-
-      /*
-       * Specialized credit products.
-       *
-       * These belong in products, not additional_consented_products.
-       */
-      const specializedProducts =
-        requestedProducts.filter(
-          product =>
-            product === 'assets' ||
-            product === 'statements',
-        );
-
-      /*
-       * Products that may be requested through
-       * additional consent.
-       */
-      const consentProducts =
-        requestedConsent.filter(
-          product =>
-            product === 'auth' ||
-            product === 'identity' ||
-            product === 'investments' ||
-            product === 'investments_auth' ||
-            product === 'liabilities' ||
-            product === 'transactions' ||
-            product === 'signal' ||
-            product === 'balance_plus',
-        );
-
-      /*
-       * Do not allow Assets or Statements to enter
-       * additional_consented_products.
-       */
-      const invalidConsentProducts =
-        requestedConsent.filter(
-          product =>
-            product === 'assets' ||
-            product === 'statements',
-        );
-
-      if (
-        invalidConsentProducts.length >
-        0
-      ) {
-        return res.status(400).json({
-          status: 'error',
-
-          message:
-            'Assets and Statements must be requested through the specialized update-mode product flow, not additional_consented_products.',
-
-          invalid_products:
-            invalidConsentProducts,
-        });
-      }
-
-      /*
-       * Specialized product request.
-       */
-      if (
-        specializedProducts.length >
-        0
-      ) {
-        /*
-         * Plaid requires the specialized product
-         * to be placed in products during update mode.
-         *
-         * We intentionally permit one specialized
-         * credit product per update session.
-         */
-        if (
-          specializedProducts.length >
-          1
-        ) {
-          return res.status(400).json({
-            status: 'error',
-            message:
-              'Request Assets and Statements through separate specialized update-mode sessions.',
-          });
-        }
-
-        const specializedProduct =
-          specializedProducts[0];
-
-        const request = {
-          user: {
-            client_user_id:
-              String(req.user.id),
-          },
-
-          client_name:
-            'iBag',
-
-          access_token:
-            accessToken,
-
-          country_codes: [
-            'US',
-          ],
-
-          language: 'en',
-
-          products: [
-            specializedProduct,
-          ],
-        };
-
-        /*
-         * Statements requires its configuration
-         * object when requested.
-         */
-        if (
-          specializedProduct ===
-          'statements'
-        ) {
-          if (
-            !statements ||
-            typeof statements !==
-              'object'
-          ) {
-            return res.status(400).json({
-              status: 'error',
-              message:
-                'statements configuration is required when adding Statements.',
-            });
-          }
-
-          request.statements =
-            statements;
-        }
-
-        /*
-         * Assets may require asset-specific
-         * configuration depending on the
-         * application's selected Plaid flow.
-         */
-        if (
-          specializedProduct ===
-            'assets' &&
-          asset_report &&
-          typeof asset_report ===
-            'object'
-        ) {
-          request.asset_report =
-            asset_report;
-        }
-
-        const response =
-          await plaidClient.linkTokenCreate(
-            request,
-          );
-
-        return res.json({
-          status: 'ok',
-
-          mode:
-            'specialized_product',
-
-          product:
-            specializedProduct,
-
-          link_token:
-            response.data.link_token,
-
-          expiration:
-            response.data.expiration,
-
-          request_id:
-            response.data.request_id,
-        });
-      }
-
-      /*
-       * Normal update mode / additional consent.
-       *
-       * No products array is supplied here.
-       */
-      const response =
+      const result =
         await createUpdateModeLinkToken({
           userId:
             req.user.id,
 
           accessToken,
 
-          webhookUrl:
-            process.env.PLAID_WEBHOOK_URL ||
-            null,
-
-          additionalConsentedProducts:
-            consentProducts,
+          accountSelectionEnabled:
+            account_selection_enabled ===
+            true,
         });
 
       return res.json({
-        status: 'ok',
-
-        mode:
-          consentProducts.length >
-          0
-            ? 'additional_consent'
-            : 'update',
-
-        products:
-          consentProducts,
+        status:
+          "ok",
 
         link_token:
-          response.link_token,
+          result.link_token,
 
         expiration:
-          response.expiration,
+          result.expiration,
 
         request_id:
-          response.request_id,
+          result.request_id,
       });
     } catch (err) {
       console.error(
-        'Plaid update link token failed:',
-        err,
+        "Plaid update Link token failed:",
+        err
       );
 
-      return res.status(500).json({
-        status: 'error',
+      const normalized =
+        err?.code
+          ? err
+          : normalizePlaidError(
+              err,
+              "PLAID_UPDATE_MODE_LINK_TOKEN_CREATE_FAILED"
+            );
 
-        message:
-          'Unable to prepare the secure Plaid update connection.',
+      return res.status(
+        normalized.status >= 400 &&
+          normalized.status < 600
+          ? normalized.status
+          : 500
+      ).json({
+        status:
+          "error",
 
         code:
-          err.code || null,
+          normalized.code,
 
-        detail:
-          process.env.NODE_ENV ===
-          'production'
-            ? undefined
-            : err.message,
+        message:
+          normalized.message,
+
+        display_message:
+          normalized.displayMessage ||
+          null,
 
         request_id:
-          err.requestId || null,
+          normalized.requestId ||
+          null,
       });
     }
-  },
+  }
 );
 
-/*
- * --------------------------------------------------------------------------
- * PLAID - EXCHANGE PUBLIC TOKEN
- * --------------------------------------------------------------------------
- */
+
+/* ============================================================================
+ * PLAID — ADDITIONAL CONSENT
+ * ========================================================================== */
 
 app.post(
-  '/plaid/exchange-public-token',
+  "/plaid/create-additional-consent-link-token",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const {
+        plaid_item_id,
+        products,
+      } =
+        req.body || {};
+
+      if (!plaid_item_id) {
+        return res.status(400).json({
+          status:
+            "error",
+
+          message:
+            "plaid_item_id is required",
+        });
+      }
+
+      if (
+        !Array.isArray(products) ||
+        products.length === 0
+      ) {
+        return res.status(400).json({
+          status:
+            "error",
+
+          message:
+            "products must contain at least one requested product",
+        });
+      }
+
+      const itemResult =
+        await pool.query(
+          `
+            SELECT
+              id,
+              plaid_access_token_encrypted
+            FROM plaid_items
+            WHERE plaid_item_id = $1
+              AND user_id = $2
+              AND status = 'active'
+            LIMIT 1
+          `,
+          [
+            plaid_item_id,
+            req.user.id,
+          ]
+        );
+
+      if (
+        itemResult.rows.length === 0
+      ) {
+        return res.status(404).json({
+          status:
+            "error",
+
+          message:
+            "Active Plaid Item not found for this user",
+        });
+      }
+
+      const accessToken =
+        decrypt(
+          itemResult.rows[0]
+            .plaid_access_token_encrypted
+        );
+
+      const result =
+        await createAdditionalConsentLinkToken({
+          userId:
+            req.user.id,
+
+          accessToken,
+
+          products,
+        });
+
+      return res.json({
+        status:
+          "ok",
+
+        link_token:
+          result.link_token,
+
+        expiration:
+          result.expiration,
+
+        request_id:
+          result.request_id,
+
+        requested_products:
+          result.requested_products,
+      });
+    } catch (err) {
+      console.error(
+        "Plaid additional consent Link token failed:",
+        err
+      );
+
+      const normalized =
+        err?.code
+          ? err
+          : normalizePlaidError(
+              err,
+              "PLAID_ADDITIONAL_CONSENT_LINK_TOKEN_CREATE_FAILED"
+            );
+
+      return res.status(
+        normalized.status >= 400 &&
+          normalized.status < 600
+          ? normalized.status
+          : 500
+      ).json({
+        status:
+          "error",
+
+        code:
+          normalized.code,
+
+        message:
+          normalized.message,
+
+        display_message:
+          normalized.displayMessage ||
+          null,
+
+        request_id:
+          normalized.requestId ||
+          null,
+      });
+    }
+  }
+);
+
+
+/* ============================================================================
+ * PLAID — SPECIALIZED PRODUCT UPDATE
+ * ========================================================================== */
+
+app.post(
+  "/plaid/create-specialized-product-link-token",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const {
+        plaid_item_id,
+        product,
+        product_configuration,
+      } =
+        req.body || {};
+
+      if (!plaid_item_id) {
+        return res.status(400).json({
+          status:
+            "error",
+
+          message:
+            "plaid_item_id is required",
+        });
+      }
+
+      if (!product) {
+        return res.status(400).json({
+          status:
+            "error",
+
+          message:
+            "product is required",
+        });
+      }
+
+      const itemResult =
+        await pool.query(
+          `
+            SELECT
+              id,
+              plaid_access_token_encrypted
+            FROM plaid_items
+            WHERE plaid_item_id = $1
+              AND user_id = $2
+              AND status = 'active'
+            LIMIT 1
+          `,
+          [
+            plaid_item_id,
+            req.user.id,
+          ]
+        );
+
+      if (
+        itemResult.rows.length === 0
+      ) {
+        return res.status(404).json({
+          status:
+            "error",
+
+          message:
+            "Active Plaid Item not found for this user",
+        });
+      }
+
+      const accessToken =
+        decrypt(
+          itemResult.rows[0]
+            .plaid_access_token_encrypted
+        );
+
+      const result =
+        await createSpecializedProductLinkToken({
+          userId:
+            req.user.id,
+
+          accessToken,
+
+          product,
+
+          productConfiguration:
+            product_configuration ||
+            null,
+        });
+
+      return res.json({
+        status:
+          "ok",
+
+        link_token:
+          result.link_token,
+
+        expiration:
+          result.expiration,
+
+        request_id:
+          result.request_id,
+
+        product:
+          result.product,
+      });
+    } catch (err) {
+      console.error(
+        "Plaid specialized product Link token failed:",
+        err
+      );
+
+      const normalized =
+        err?.code
+          ? err
+          : normalizePlaidError(
+              err,
+              "PLAID_SPECIALIZED_PRODUCT_LINK_TOKEN_CREATE_FAILED"
+            );
+
+      return res.status(
+        normalized.status >= 400 &&
+          normalized.status < 600
+          ? normalized.status
+          : 500
+      ).json({
+        status:
+          "error",
+
+        code:
+          normalized.code,
+
+        message:
+          normalized.message,
+
+        display_message:
+          normalized.displayMessage ||
+          null,
+
+        request_id:
+          normalized.requestId ||
+          null,
+      });
+    }
+  }
+);
+
+
+/* ============================================================================
+ * PLAID — EXCHANGE PUBLIC TOKEN
+ * ========================================================================== */
+
+app.post(
+  "/plaid/exchange-public-token",
   requireAuth,
   async (req, res) => {
     try {
       const {
         public_token,
         institution_name,
-      } = req.body;
+      } =
+        req.body || {};
 
       if (!public_token) {
         return res.status(400).json({
-          status: 'error',
+          status:
+            "error",
+
           message:
-            'public_token is required',
+            "public_token is required",
         });
       }
 
       const exchangeRes =
-        await plaidClient.itemPublicTokenExchange(
-          {
-            public_token,
-          },
-        );
+        await plaidClient.itemPublicTokenExchange({
+          public_token,
+        });
 
-      const access_token =
-        exchangeRes.data
-          .access_token;
+      const accessToken =
+        exchangeRes.data.access_token;
 
-      const plaid_item_id =
+      const plaidItemId =
         exchangeRes.data.item_id;
 
       const userId =
         req.user.id;
 
       const encryptedToken =
-        encrypt(access_token);
+        encrypt(
+          accessToken
+        );
 
       /*
-       * Prevent accidental duplicate storage
-       * of the same Plaid Item for the same user.
+       * Prevent accidental duplicate ownership of the same Item.
        */
-      const existingItem =
+      const existing =
         await pool.query(
           `
             SELECT
-              id
+              id,
+              user_id
             FROM plaid_items
             WHERE plaid_item_id = $1
-              AND user_id = $2
             LIMIT 1
           `,
           [
-            plaid_item_id,
-            userId,
-          ],
+            plaidItemId,
+          ]
         );
 
-      let plaidItemDbId;
-
       if (
-        existingItem.rows.length >
-        0
+        existing.rows.length > 0
       ) {
-        const updatedItem =
-          await pool.query(
-            `
-              UPDATE plaid_items
-              SET
-                plaid_access_token_encrypted = $1,
-                institution_name =
-                  COALESCE(
-                    $2,
-                    institution_name
-                  ),
-                status = 'active',
-                updated_at = now()
-              WHERE id = $3
-              RETURNING id
-            `,
-            [
-              encryptedToken,
-              institution_name ||
-                null,
-              existingItem
-                .rows[0].id,
-            ],
-          );
+        if (
+          existing.rows[0].user_id !==
+          userId
+        ) {
+          return res.status(409).json({
+            status:
+              "error",
 
-        plaidItemDbId =
-          updatedItem.rows[0].id;
-      } else {
-        const itemInsert =
-          await pool.query(
-            `
-              INSERT INTO plaid_items
-              (
-                user_id,
-                plaid_item_id,
-                plaid_access_token_encrypted,
-                institution_name,
-                status
-              )
-              VALUES
-              ($1, $2, $3, $4, 'active')
-              RETURNING id
-            `,
-            [
-              userId,
-              plaid_item_id,
-              encryptedToken,
-              institution_name ||
-                null,
-            ],
-          );
+            message:
+              "This Plaid Item is already associated with another iBag user.",
+          });
+        }
 
-        plaidItemDbId =
-          itemInsert.rows[0].id;
+        return res.status(409).json({
+          status:
+            "error",
+
+          message:
+            "This Plaid Item is already connected to your iBag.",
+        });
       }
 
-      /*
-       * Retrieve authoritative account state
-       * from Plaid.
-       */
+      const itemInsert =
+        await pool.query(
+          `
+            INSERT INTO plaid_items (
+              user_id,
+              plaid_item_id,
+              plaid_access_token_encrypted,
+              institution_name,
+              status
+            )
+            VALUES (
+              $1,
+              $2,
+              $3,
+              $4,
+              'active'
+            )
+            RETURNING id
+          `,
+          [
+            userId,
+            plaidItemId,
+            encryptedToken,
+            institution_name ||
+              null,
+          ]
+        );
+
+      const plaidItemDbId =
+        itemInsert.rows[0].id;
+
       const accountsRes =
         await plaidClient.accountsGet({
-          access_token,
+          access_token:
+            accessToken,
         });
 
       for (
-        const acct of
-        accountsRes.data.accounts
+        const account
+        of accountsRes.data.accounts
       ) {
         await pool.query(
           `
-            INSERT INTO accounts
-            (
+            INSERT INTO accounts (
               plaid_item_id,
               plaid_account_id,
               name,
@@ -896,8 +941,7 @@ app.post(
               balance_iso_currency_code,
               balance_updated_at
             )
-            VALUES
-            (
+            VALUES (
               $1,
               $2,
               $3,
@@ -909,8 +953,9 @@ app.post(
               $9,
               now()
             )
-            ON CONFLICT
-              (plaid_account_id)
+            ON CONFLICT (
+              plaid_account_id
+            )
             DO UPDATE SET
               plaid_item_id =
                 EXCLUDED.plaid_item_id,
@@ -941,31 +986,29 @@ app.post(
           `,
           [
             plaidItemDbId,
-            acct.account_id,
-            acct.name,
-            acct.type,
-            acct.subtype,
-            acct.mask,
-            acct.balances?.current ??
+            account.account_id,
+            account.name,
+            account.type,
+            account.subtype,
+            account.mask,
+            account.balances?.current ??
               null,
-            acct.balances?.available ??
+            account.balances?.available ??
               null,
-            acct.balances
-              ?.iso_currency_code ||
-              'USD',
-          ],
+            account.balances?.iso_currency_code ||
+              "USD",
+          ]
         );
       }
 
       /*
-       * Immediately synchronize the authoritative
-       * transaction delta.
+       * Immediately establish the initial transaction observation state.
        */
-      let immediateSyncResult =
+      let immediateSync =
         null;
 
       try {
-        const freshItem =
+        const itemResult =
           await pool.query(
             `
               SELECT
@@ -975,95 +1018,122 @@ app.post(
                 cursor
               FROM plaid_items
               WHERE id = $1
+              LIMIT 1
             `,
-            [plaidItemDbId],
+            [
+              plaidItemDbId,
+            ]
           );
 
         if (
-          freshItem.rows.length >
-          0
+          itemResult.rows.length > 0
         ) {
-          immediateSyncResult =
+          immediateSync =
             await syncOneItem(
-              freshItem.rows[0],
+              itemResult.rows[0]
             );
         }
-      } catch (syncErr) {
-        /*
-         * The Item itself remains stored even if
-         * the immediate transaction synchronization
-         * has a temporary failure.
-         */
+      } catch (syncError) {
         console.error(
-          'Immediate post-link sync failed:',
-          syncErr,
+          "Immediate post-link sync failed:",
+          syncError
         );
+
+        /*
+         * Connection itself remains valid.
+         *
+         * The synchronization failure is returned explicitly so the
+         * frontend can distinguish connection from observation availability.
+         */
+        immediateSync = {
+          status:
+            "error",
+
+          message:
+            syncError.message,
+        };
       }
 
       return res.json({
-        status: 'ok',
+        status:
+          "ok",
 
-        plaid_item_id,
+        plaid_item_id:
+          plaidItemId,
 
         accounts_stored:
-          accountsRes.data
-            .accounts.length,
+          accountsRes.data.accounts.length,
 
         immediate_sync:
-          immediateSyncResult,
+          immediateSync,
       });
     } catch (err) {
       console.error(
-        'Plaid public token exchange failed:',
-        err,
+        "Plaid public token exchange failed:",
+        err
       );
 
-      return res.status(500).json({
-        status: 'error',
+      const normalized =
+        err?.code
+          ? err
+          : normalizePlaidError(
+              err,
+              "PLAID_PUBLIC_TOKEN_EXCHANGE_FAILED"
+            );
 
-        message:
-          'Unable to complete the secure financial connection.',
+      return res.status(
+        normalized.status >= 400 &&
+          normalized.status < 600
+          ? normalized.status
+          : 500
+      ).json({
+        status:
+          "error",
 
         code:
-          err.code || null,
+          normalized.code,
 
-        detail:
-          process.env.NODE_ENV ===
-          'production'
-            ? undefined
-            : err.message,
+        message:
+          normalized.message,
+
+        display_message:
+          normalized.displayMessage ||
+          null,
 
         request_id:
-          err.requestId || null,
+          normalized.requestId ||
+          null,
       });
     }
-  },
+  }
 );
 
-/*
- * --------------------------------------------------------------------------
- * PLAID - RESYNC AFTER UPDATE
- * --------------------------------------------------------------------------
- */
+
+/* ============================================================================
+ * PLAID — RESYNC AFTER UPDATE
+ * ========================================================================== */
 
 app.post(
-  '/plaid/resync-after-update',
+  "/plaid/resync-after-update",
   requireAuth,
   async (req, res) => {
     try {
       const {
         plaid_item_id,
-      } = req.body;
+      } =
+        req.body || {};
 
       if (!plaid_item_id) {
         return res.status(400).json({
-          status: 'error',
+          status:
+            "error",
+
           message:
-            'plaid_item_id is required',
+            "plaid_item_id is required",
         });
       }
 
-      const itemRow =
+      const itemResult =
         await pool.query(
           `
             SELECT
@@ -1080,105 +1150,120 @@ app.post(
           [
             plaid_item_id,
             req.user.id,
-          ],
+          ]
         );
 
       if (
-        itemRow.rows.length ===
-        0
+        itemResult.rows.length === 0
       ) {
         return res.status(404).json({
-          status: 'error',
+          status:
+            "error",
+
           message:
-            'Item not found for this user',
+            "Active Plaid Item not found for this user",
         });
       }
 
       const result =
         await syncOneItem(
-          itemRow.rows[0],
+          itemResult.rows[0]
         );
 
       return res.json({
-        status: 'ok',
+        status:
+          result.error
+            ? "partial"
+            : "ok",
+
         result,
       });
     } catch (err) {
       console.error(
-        'Plaid resync failed:',
-        err,
+        "Plaid resync failed:",
+        err
       );
 
       return res.status(500).json({
-        status: 'error',
+        status:
+          "error",
+
         message:
-          'Unable to synchronize the financial connection.',
-        code:
-          err.code || null,
-        request_id:
-          err.requestId || null,
+          err.message,
       });
     }
-  },
+  }
 );
 
-/*
- * --------------------------------------------------------------------------
+
+/* ============================================================================
  * INTERNAL SYNCHRONIZATION
- * --------------------------------------------------------------------------
- */
+ * ========================================================================== */
 
 app.post(
-  '/internal/sync/run',
+  "/internal/sync/run",
   requireInternalSecret,
-  runSync,
+  runSync
 );
 
-/*
- * --------------------------------------------------------------------------
+
+/* ============================================================================
  * 404
- * --------------------------------------------------------------------------
- */
-
-app.use((req, res) => {
-  res.status(404).json({
-    status: 'error',
-    message: 'Not found',
-  });
-});
-
-/*
- * --------------------------------------------------------------------------
- * GLOBAL ERROR HANDLER
- * --------------------------------------------------------------------------
- */
+ * ========================================================================== */
 
 app.use(
-  (err, req, res, next) => {
+  (req, res) => {
+    return res.status(404).json({
+      status:
+        "error",
+
+      message:
+        "Not found",
+    });
+  }
+);
+
+
+/* ============================================================================
+ * GLOBAL ERROR HANDLER
+ * ========================================================================== */
+
+app.use(
+  (
+    err,
+    req,
+    res,
+    next
+  ) => {
     console.error(
-      'Unhandled error:',
-      err,
+      "Unhandled error:",
+      err
     );
 
     return res.status(500).json({
-      status: 'error',
+      status:
+        "error",
+
       message:
-        'Internal server error',
+        "Internal server error",
     });
-  },
+  }
 );
 
-/*
- * --------------------------------------------------------------------------
+
+/* ============================================================================
  * SERVER
- * --------------------------------------------------------------------------
- */
+ * ========================================================================== */
 
 const PORT =
-  process.env.PORT || 3000;
+  process.env.PORT ||
+  3000;
 
-app.listen(PORT, () => {
-  console.log(
-    `iBag API listening on port ${PORT}`,
-  );
-});
+app.listen(
+  PORT,
+  () => {
+    console.log(
+      `iBag API listening on port ${PORT}`
+    );
+  }
+);
