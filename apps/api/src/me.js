@@ -59,7 +59,6 @@ async function getMe(req, res) {
             a.id,
             a.plaid_account_id,
             a.name,
-            a.official_name,
             a.mask,
             a.type,
             a.subtype,
@@ -238,6 +237,11 @@ async function getDashboard(req, res) {
 
     /*
      * Account state.
+     *
+     * NOTE:
+     * The deployed accounts schema contains `name` but does not
+     * contain `official_name`. Do not reference a nonexistent
+     * database column.
      */
 
     const accountsResult =
@@ -247,7 +251,6 @@ async function getDashboard(req, res) {
             a.id,
             a.plaid_account_id,
             a.name,
-            a.official_name,
             a.mask,
             a.type,
             a.subtype,
@@ -572,14 +575,8 @@ async function getDashboard(req, res) {
 
       runway,
 
-      /*
-       * Explicit evidence contract.
-       *
-       * This makes it possible for the frontend
-       * to distinguish facts from conclusions.
-       */
-
-      evidence: intelligence.evidence,
+      evidence:
+        intelligence.evidence,
 
       insights:
         intelligence.insights,
@@ -679,7 +676,6 @@ async function getAccounts(
             a.id,
             a.plaid_account_id,
             a.name,
-            a.official_name,
             a.mask,
             a.type,
             a.subtype,
