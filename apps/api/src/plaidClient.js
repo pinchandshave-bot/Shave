@@ -7,18 +7,42 @@ const {
 } = require("plaid");
 
 /*
- * iBag Plaid Client
+ * ============================================================================
+ * iBag PLAID CLIENT
+ * ============================================================================
  *
- * Production integration boundary for Plaid.
+ * This module is the application's single Plaid integration boundary.
  *
- * Core rules:
- * - Real authorized financial data only.
- * - No synthetic, mock, seeded, or fabricated financial data.
- * - Phase 1 is read-only intelligence.
- * - No money movement.
- * - Requested products are never treated as available products.
- * - Product availability must be verified from Plaid.
- * - Product-specific evidence is independently gated.
+ * PRINCIPLES
+ *
+ * 1. Real authorized financial data only.
+ * 2. No mock, fake, seeded, synthetic, or fabricated financial data.
+ * 3. Phase 1 is information/intelligence only.
+ * 4. No money movement.
+ * 5. Product capability is never inferred from configuration alone.
+ * 6. Plaid Item state is authoritative for actual product access.
+ * 7. Specialized Plaid products use their required authorization lifecycle.
+ * 8. Product-specific intelligence is evidence-gated.
+ *
+ * IMPORTANT:
+ *
+ * iBag may support many Plaid intelligence domains without initializing
+ * every domain on every Item.
+ *
+ * The distinction is:
+ *
+ *   iBag capability
+ *        !=
+ *   Plaid product requested
+ *        !=
+ *   Plaid product initialized
+ *        !=
+ *   Plaid product consented
+ *        !=
+ *   usable evidence
+ *
+ * This distinction is fundamental to investor-grade financial intelligence.
+ * ============================================================================
  */
 
 const plaidEnv =
@@ -62,25 +86,38 @@ const configuration =
 const plaidClient =
   new PlaidApi(configuration);
 
-/* -------------------------------------------------------------------------- */
-/* PRODUCT DEFINITIONS                                                        */
-/* -------------------------------------------------------------------------- */
+
+/* ============================================================================
+ * ENVIRONMENT
+ * ========================================================================== */
+
+const PLAID_ENVIRONMENT =
+  process.env.PLAID_ENV === "production"
+    ? "production"
+    : "sandbox";
+
+
+/* ============================================================================
+ * PRODUCT MODEL
+ * ========================================================================== */
 
 /*
- * Transactions is the initial required Link product.
+ * Required initial product.
  *
- * We intentionally establish a known-good Link boundary first.
- *
- * Additional products are orchestrated through the appropriate Plaid
- * authorization/update flows rather than assuming that declaring every
- * possible product in one request makes every domain available.
+ * Transactions is the Phase 1 core because it provides the primary
+ * transaction observation stream used by iBag's initial intelligence layer.
  */
-
-const PLAID_REQUIRED_PRODUCTS =
+const PLAID_INITIAL_PRODUCTS =
   Object.freeze([
     "transactions",
   ]);
 
+
+/*
+ * Products that may be requested as optional products when appropriate.
+ *
+ * These are NOT claims that every Item supports them.
+ */
 const PLAID_OPTIONAL_PRODUCTS =
   Object.freeze([
     "auth",
@@ -89,35 +126,52 @@ const PLAID_OPTIONAL_PRODUCTS =
     "liabilities",
   ]);
 
+
+/*
+ * Specialized products have their own Link/update-mode lifecycle.
+ *
+ * Statements and Assets must not simply be placed into
+ * additional_consented_products.
+ */
 const PLAID_SPECIALIZED_PRODUCTS =
   Object.freeze([
     "assets",
     "statements",
   ]);
 
+
+/*
+ * Complete iBag capability registry.
+ *
+ * This is an iBag architecture map, not a declaration that every capability
+ * is initialized for every user.
+ */
 const IBAG_PLAID_PRODUCTS =
   Object.freeze({
-    auth: {
-      plaidProduct: "auth",
-      linkMode: "optional",
-      endpoint: "authGet",
-      intelligenceDomain:
-        "account_access",
-    },
-
     transactions: {
-      plaidProduct:
-        "transactions",
-      linkMode: "required",
+      plaidProduct: "transactions",
+      initialization:
+        "initial",
       endpoint:
         "transactionsSync",
       intelligenceDomain:
         "transactions",
     },
 
+    auth: {
+      plaidProduct: "auth",
+      initialization:
+        "optional_or_update",
+      endpoint:
+        "authGet",
+      intelligenceDomain:
+        "account_access",
+    },
+
     balance: {
       plaidProduct: null,
-      linkMode: "automatic",
+      initialization:
+        "automatic",
       endpoint:
         "accountsBalanceGet",
       intelligenceDomain:
@@ -126,44 +180,48 @@ const IBAG_PLAID_PRODUCTS =
 
     identity: {
       plaidProduct: "identity",
-      linkMode: "optional",
-      endpoint: "identityGet",
+      initialization:
+        "optional_or_update",
+      endpoint:
+        "identityGet",
       intelligenceDomain:
         "identity",
     },
 
-    assets: {
-      plaidProduct: "assets",
-      linkMode: "specialized",
-      endpoint: "assetReport",
-      intelligenceDomain:
-        "assets",
-    },
-
-    liabilities: {
-      plaidProduct:
-        "liabilities",
-      linkMode: "optional",
-      endpoint:
-        "liabilitiesGet",
-      intelligenceDomain:
-        "liabilities",
-    },
-
     investments: {
-      plaidProduct:
-        "investments",
-      linkMode: "optional",
+      plaidProduct: "investments",
+      initialization:
+        "optional_or_update",
       endpoint:
         "investmentsHoldingsGet",
       intelligenceDomain:
         "investments",
     },
 
+    liabilities: {
+      plaidProduct: "liabilities",
+      initialization:
+        "optional_or_update",
+      endpoint:
+        "liabilitiesGet",
+      intelligenceDomain:
+        "liabilities",
+    },
+
+    assets: {
+      plaidProduct: "assets",
+      initialization:
+        "specialized_update",
+      endpoint:
+        "assetReport",
+      intelligenceDomain:
+        "assets",
+    },
+
     statements: {
-      plaidProduct:
-        "statements",
-      linkMode: "specialized",
+      plaidProduct: "statements",
+      initialization:
+        "specialized_update",
       endpoint:
         "statementsList",
       intelligenceDomain:
@@ -171,23 +229,25 @@ const IBAG_PLAID_PRODUCTS =
     },
   });
 
-/* -------------------------------------------------------------------------- */
-/* LINK TOKEN                                                                 */
-/* -------------------------------------------------------------------------- */
 
 /*
- * Creates the initial iBag Link token.
+ * Additional-consent products that are actually valid in the current
+ * Plaid Link API contract.
  *
- * IMPORTANT:
- *
- * This deliberately starts with Transactions as the required product.
- *
- * We do not represent optional/specialized products as initialized merely
- * because iBag supports those intelligence domains.
- *
- * The resulting Item must subsequently be inspected to determine its real
- * product state.
+ * Statements and Assets intentionally do NOT appear here.
  */
+const PLAID_ADDITIONAL_CONSENT_PRODUCTS =
+  Object.freeze([
+    "auth",
+    "identity",
+    "investments",
+    "liabilities",
+  ]);
+
+
+/* ============================================================================
+ * LINK TOKEN — INITIAL
+ * ========================================================================== */
 
 async function createLinkToken({
   userId,
@@ -205,17 +265,18 @@ async function createLinkToken({
         String(userId),
     },
 
-    client_name: "iBag",
+    client_name:
+      "iBag",
 
     country_codes: [
       "US",
     ],
 
-    language: "en",
+    language:
+      "en",
 
-    products: [
-      "transactions",
-    ],
+    products:
+      PLAID_INITIAL_PRODUCTS,
   };
 
   if (webhookUrl) {
@@ -227,14 +288,14 @@ async function createLinkToken({
     console.log(
       "Creating Plaid Link token",
       {
+        environment:
+          PLAID_ENVIRONMENT,
+
         userId:
           String(userId),
 
         products:
           request.products,
-
-        country_codes:
-          request.country_codes,
       }
     );
 
@@ -253,34 +314,15 @@ async function createLinkToken({
       request_id:
         response.data.request_id,
 
+      environment:
+        PLAID_ENVIRONMENT,
+
       initial_products:
-        request.products,
+        [
+          ...request.products,
+        ],
     };
   } catch (error) {
-    console.error(
-      "Plaid Link token creation failed",
-      {
-        code:
-          error?.response?.data
-            ?.error_code,
-
-        message:
-          error?.response?.data
-            ?.error_message,
-
-        display_message:
-          error?.response?.data
-            ?.display_message,
-
-        request_id:
-          error?.response?.data
-            ?.request_id,
-
-        status:
-          error?.response?.status,
-      }
-    );
-
     throw normalizePlaidError(
       error,
       "PLAID_LINK_TOKEN_CREATE_FAILED"
@@ -288,22 +330,29 @@ async function createLinkToken({
   }
 }
 
-/* -------------------------------------------------------------------------- */
-/* UPDATE MODE LINK TOKEN                                                     */
-/* -------------------------------------------------------------------------- */
+
+/* ============================================================================
+ * UPDATE MODE — EXISTING ITEM
+ * ========================================================================== */
 
 /*
- * Update-mode Link is used to add or modify product access on an existing
- * Plaid Item when Plaid supports that lifecycle for the product.
+ * Standard update mode.
  *
- * We intentionally do not claim that update mode guarantees a product.
- * The Item must always be inspected afterward.
+ * No products are supplied here.
+ *
+ * This is appropriate for:
+ *
+ * - credential repair
+ * - account selection
+ * - general Item updates
+ *
+ * Product-specific additions are handled separately below.
  */
-
 async function createUpdateModeLinkToken({
   userId,
   accessToken,
   webhookUrl = null,
+  accountSelectionEnabled = false,
 } = {}) {
   if (!userId) {
     throw new Error(
@@ -323,7 +372,8 @@ async function createUpdateModeLinkToken({
         String(userId),
     },
 
-    client_name: "iBag",
+    client_name:
+      "iBag",
 
     access_token:
       accessToken,
@@ -332,8 +382,16 @@ async function createUpdateModeLinkToken({
       "US",
     ],
 
-    language: "en",
+    language:
+      "en",
   };
+
+  if (accountSelectionEnabled) {
+    request.update = {
+      account_selection_enabled:
+        true,
+    };
+  }
 
   if (webhookUrl) {
     request.webhook =
@@ -364,9 +422,231 @@ async function createUpdateModeLinkToken({
   }
 }
 
-/* -------------------------------------------------------------------------- */
-/* ITEM                                                                       */
-/* -------------------------------------------------------------------------- */
+
+/* ============================================================================
+ * UPDATE MODE — ADD CONSENTED OPTIONAL PRODUCTS
+ * ========================================================================== */
+
+/*
+ * Request additional consent for products such as:
+ *
+ * - auth
+ * - identity
+ * - investments
+ * - liabilities
+ *
+ * Statements and Assets are deliberately rejected here because they use
+ * specialized update-mode product initialization.
+ */
+async function createAdditionalConsentLinkToken({
+  userId,
+  accessToken,
+  products = [],
+  webhookUrl = null,
+} = {}) {
+  if (!userId) {
+    throw new Error(
+      "createAdditionalConsentLinkToken requires userId"
+    );
+  }
+
+  if (!accessToken) {
+    throw new Error(
+      "createAdditionalConsentLinkToken requires accessToken"
+    );
+  }
+
+  if (
+    !Array.isArray(products) ||
+    products.length === 0
+  ) {
+    throw new Error(
+      "At least one additional consent product is required"
+    );
+  }
+
+  const uniqueProducts =
+    [
+      ...new Set(products),
+    ];
+
+  const invalidProducts =
+    uniqueProducts.filter(
+      product =>
+        !PLAID_ADDITIONAL_CONSENT_PRODUCTS.includes(
+          product
+        )
+    );
+
+  if (invalidProducts.length) {
+    throw new Error(
+      `Products cannot be requested through additional_consented_products: ${invalidProducts.join(", ")}`
+    );
+  }
+
+  const request = {
+    user: {
+      client_user_id:
+        String(userId),
+    },
+
+    client_name:
+      "iBag",
+
+    access_token:
+      accessToken,
+
+    country_codes: [
+      "US",
+    ],
+
+    language:
+      "en",
+
+    additional_consented_products:
+      uniqueProducts,
+  };
+
+  if (webhookUrl) {
+    request.webhook =
+      webhookUrl;
+  }
+
+  try {
+    const response =
+      await plaidClient.linkTokenCreate(
+        request
+      );
+
+    return {
+      link_token:
+        response.data.link_token,
+
+      expiration:
+        response.data.expiration,
+
+      request_id:
+        response.data.request_id,
+
+      requested_products:
+        uniqueProducts,
+    };
+  } catch (error) {
+    throw normalizePlaidError(
+      error,
+      "PLAID_ADDITIONAL_CONSENT_LINK_TOKEN_CREATE_FAILED"
+    );
+  }
+}
+
+
+/* ============================================================================
+ * UPDATE MODE — SPECIALIZED PRODUCT
+ * ========================================================================== */
+
+/*
+ * Assets / Statements require specialized update-mode handling.
+ *
+ * Plaid's current Link contract requires the specialized product to appear
+ * in the products array for this flow.
+ */
+async function createSpecializedProductLinkToken({
+  userId,
+  accessToken,
+  product,
+  webhookUrl = null,
+  productConfiguration = null,
+} = {}) {
+  if (!userId) {
+    throw new Error(
+      "createSpecializedProductLinkToken requires userId"
+    );
+  }
+
+  if (!accessToken) {
+    throw new Error(
+      "createSpecializedProductLinkToken requires accessToken"
+    );
+  }
+
+  if (
+    !PLAID_SPECIALIZED_PRODUCTS.includes(
+      product
+    )
+  ) {
+    throw new Error(
+      `Unsupported specialized Plaid product: ${product}`
+    );
+  }
+
+  const request = {
+    user: {
+      client_user_id:
+        String(userId),
+    },
+
+    client_name:
+      "iBag",
+
+    access_token:
+      accessToken,
+
+    country_codes: [
+      "US",
+    ],
+
+    language:
+      "en",
+
+    products: [
+      product,
+    ],
+  };
+
+  if (
+    productConfiguration &&
+    typeof productConfiguration ===
+      "object"
+  ) {
+    request[product] =
+      productConfiguration;
+  }
+
+  if (webhookUrl) {
+    request.webhook =
+      webhookUrl;
+  }
+
+  try {
+    const response =
+      await plaidClient.linkTokenCreate(
+        request
+      );
+
+    return {
+      link_token:
+        response.data.link_token,
+
+      expiration:
+        response.data.expiration,
+
+      request_id:
+        response.data.request_id,
+
+      product,
+    };
+  } catch (error) {
+    throw normalizePlaidError(
+      error,
+      "PLAID_SPECIALIZED_PRODUCT_LINK_TOKEN_CREATE_FAILED"
+    );
+  }
+}
+
+
+/* ============================================================================
+ * ITEM
+ * ========================================================================== */
 
 async function getItem(
   accessToken
@@ -393,30 +673,10 @@ async function getItem(
   }
 }
 
-/* -------------------------------------------------------------------------- */
-/* PRODUCT COVERAGE                                                           */
-/* -------------------------------------------------------------------------- */
 
-/*
- * Product coverage is observational.
- *
- * requested:
- *   What iBag knows how to request.
- *
- * initialized:
- *   Products Plaid reports as initialized on the Item.
- *
- * billed:
- *   Products Plaid reports as billed.
- *
- * available:
- *   Products Plaid reports as available.
- *
- * consented:
- *   Products Plaid reports as consented when provided by the API.
- *
- * None of these states are fabricated.
- */
+/* ============================================================================
+ * PRODUCT COVERAGE
+ * ========================================================================== */
 
 async function getProductCoverage(
   accessToken
@@ -459,11 +719,15 @@ async function getProductCoverage(
       : [];
 
   return {
-    requested: [
-      ...PLAID_REQUIRED_PRODUCTS,
-      ...PLAID_OPTIONAL_PRODUCTS,
-      ...PLAID_SPECIALIZED_PRODUCTS,
-    ],
+    environment:
+      PLAID_ENVIRONMENT,
+
+    requested:
+      [
+        ...PLAID_INITIAL_PRODUCTS,
+        ...PLAID_OPTIONAL_PRODUCTS,
+        ...PLAID_SPECIALIZED_PRODUCTS,
+      ],
 
     initialized:
       products,
@@ -481,17 +745,20 @@ async function getProductCoverage(
       available: true,
 
       reason:
-        "Balance is retrieved through accountsBalanceGet.",
+        "Balance is retrieved through accountsBalanceGet and does not require explicit Link initialization.",
     },
 
     specialized:
-      PLAID_SPECIALIZED_PRODUCTS,
+      [
+        ...PLAID_SPECIALIZED_PRODUCTS,
+      ],
   };
 }
 
-/* -------------------------------------------------------------------------- */
-/* AUTH                                                                       */
-/* -------------------------------------------------------------------------- */
+
+/* ============================================================================
+ * AUTH
+ * ========================================================================== */
 
 async function getAuth(
   accessToken
@@ -518,9 +785,10 @@ async function getAuth(
   }
 }
 
-/* -------------------------------------------------------------------------- */
-/* BALANCE                                                                    */
-/* -------------------------------------------------------------------------- */
+
+/* ============================================================================
+ * BALANCE
+ * ========================================================================== */
 
 async function getBalances(
   accessToken
@@ -533,12 +801,10 @@ async function getBalances(
 
   try {
     const response =
-      await plaidClient.accountsBalanceGet(
-        {
-          access_token:
-            accessToken,
-        }
-      );
+      await plaidClient.accountsBalanceGet({
+        access_token:
+          accessToken,
+      });
 
     return response.data;
   } catch (error) {
@@ -549,9 +815,10 @@ async function getBalances(
   }
 }
 
-/* -------------------------------------------------------------------------- */
-/* TRANSACTIONS                                                               */
-/* -------------------------------------------------------------------------- */
+
+/* ============================================================================
+ * TRANSACTIONS
+ * ========================================================================== */
 
 async function syncTransactions(
   accessToken,
@@ -588,9 +855,10 @@ async function syncTransactions(
   }
 }
 
-/* -------------------------------------------------------------------------- */
-/* IDENTITY                                                                   */
-/* -------------------------------------------------------------------------- */
+
+/* ============================================================================
+ * IDENTITY
+ * ========================================================================== */
 
 async function getIdentity(
   accessToken
@@ -603,12 +871,10 @@ async function getIdentity(
 
   try {
     const response =
-      await plaidClient.identityGet(
-        {
-          access_token:
-            accessToken,
-        }
-      );
+      await plaidClient.identityGet({
+        access_token:
+          accessToken,
+      });
 
     return response.data;
   } catch (error) {
@@ -619,9 +885,10 @@ async function getIdentity(
   }
 }
 
-/* -------------------------------------------------------------------------- */
-/* LIABILITIES                                                                */
-/* -------------------------------------------------------------------------- */
+
+/* ============================================================================
+ * LIABILITIES
+ * ========================================================================== */
 
 async function getLiabilities(
   accessToken
@@ -634,12 +901,10 @@ async function getLiabilities(
 
   try {
     const response =
-      await plaidClient.liabilitiesGet(
-        {
-          access_token:
-            accessToken,
-        }
-      );
+      await plaidClient.liabilitiesGet({
+        access_token:
+          accessToken,
+      });
 
     return response.data;
   } catch (error) {
@@ -650,9 +915,10 @@ async function getLiabilities(
   }
 }
 
-/* -------------------------------------------------------------------------- */
-/* INVESTMENTS                                                                */
-/* -------------------------------------------------------------------------- */
+
+/* ============================================================================
+ * INVESTMENTS
+ * ========================================================================== */
 
 async function getInvestments(
   accessToken
@@ -665,12 +931,10 @@ async function getInvestments(
 
   try {
     const response =
-      await plaidClient.investmentsHoldingsGet(
-        {
-          access_token:
-            accessToken,
-        }
-      );
+      await plaidClient.investmentsHoldingsGet({
+        access_token:
+          accessToken,
+      });
 
     return response.data;
   } catch (error) {
@@ -681,9 +945,10 @@ async function getInvestments(
   }
 }
 
-/* -------------------------------------------------------------------------- */
-/* ASSET REPORT                                                               */
-/* -------------------------------------------------------------------------- */
+
+/* ============================================================================
+ * ASSET REPORT
+ * ========================================================================== */
 
 async function createAssetReport({
   accessToken,
@@ -729,6 +994,7 @@ async function createAssetReport({
   }
 }
 
+
 async function getAssetReport(
   assetReportToken
 ) {
@@ -740,12 +1006,10 @@ async function getAssetReport(
 
   try {
     const response =
-      await plaidClient.assetReportGet(
-        {
-          asset_report_token:
-            assetReportToken,
-        }
-      );
+      await plaidClient.assetReportGet({
+        asset_report_token:
+          assetReportToken,
+      });
 
     return response.data;
   } catch (error) {
@@ -756,9 +1020,10 @@ async function getAssetReport(
   }
 }
 
-/* -------------------------------------------------------------------------- */
-/* STATEMENTS                                                                 */
-/* -------------------------------------------------------------------------- */
+
+/* ============================================================================
+ * STATEMENTS
+ * ========================================================================== */
 
 async function getStatements(
   accessToken
@@ -771,12 +1036,10 @@ async function getStatements(
 
   try {
     const response =
-      await plaidClient.statementsList(
-        {
-          access_token:
-            accessToken,
-        }
-      );
+      await plaidClient.statementsList({
+        access_token:
+          accessToken,
+      });
 
     return response.data;
   } catch (error) {
@@ -787,9 +1050,10 @@ async function getStatements(
   }
 }
 
-/* -------------------------------------------------------------------------- */
-/* ERROR NORMALIZATION                                                        */
-/* -------------------------------------------------------------------------- */
+
+/* ============================================================================
+ * ERROR NORMALIZATION
+ * ========================================================================== */
 
 function normalizePlaidError(
   error,
@@ -815,18 +1079,22 @@ function normalizePlaidError(
     null;
 
   normalized.status =
-    responseData.error_code ||
-    fallbackCode;
+    error?.response?.status ||
+    null;
 
   normalized.requestId =
     responseData.request_id ||
-    error?.response?.headers
-      ?.["plaid-request-id"] ||
+    error?.response?.headers?.[
+      "plaid-request-id"
+    ] ||
     null;
 
   normalized.displayMessage =
     responseData.display_message ||
     null;
+
+  normalized.environment =
+    PLAID_ENVIRONMENT;
 
   normalized.cause =
     error;
@@ -834,24 +1102,33 @@ function normalizePlaidError(
   return normalized;
 }
 
-/* -------------------------------------------------------------------------- */
-/* EXPORTS                                                                    */
-/* -------------------------------------------------------------------------- */
+
+/* ============================================================================
+ * EXPORTS
+ * ========================================================================== */
 
 module.exports = {
   plaidClient,
 
-  PLAID_REQUIRED_PRODUCTS,
+  PLAID_ENVIRONMENT,
+
+  PLAID_INITIAL_PRODUCTS,
 
   PLAID_OPTIONAL_PRODUCTS,
 
   PLAID_SPECIALIZED_PRODUCTS,
+
+  PLAID_ADDITIONAL_CONSENT_PRODUCTS,
 
   IBAG_PLAID_PRODUCTS,
 
   createLinkToken,
 
   createUpdateModeLinkToken,
+
+  createAdditionalConsentLinkToken,
+
+  createSpecializedProductLinkToken,
 
   getItem,
 
