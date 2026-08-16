@@ -1,3 +1,185 @@
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
+const pool = require('./db');
+
+if (!process.env.JWT_SECRET) {
+  throw new Error('FATAL: JWT_SECRET environment variable is not defined.');
+}
+
+/**
+ * Timing-safe string comparison to prevent timing side-channel attacks on
+ * the internal-secret header check.
+ */
+function safeTimingCompare(a, b) {
+  if (!a || !b) return false;
+
+  const bufA = Buffer.from(String(a));
+  const bufB = Buffer.from(String(b));
+
+  if (bufA.length !== bufB.length) return false;
+
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+/**
+ * Best-effort security audit log write. This must never be able to break
+ * signup or login — a logging failure (FK mismatch, transient DB issue,
+ * etc.) is a logging problem, not an authentication problem. Fire-and-forget
+ * with a .catch(), never awaited inline in the auth flow.
+ */
+function logSecurityEvent(userId, eventType, req) {
+  pool
+    .query(
+      `INSERT INTO public.security_audit_logs (user_id, event_type, ip_address, user_agent)
+       VALUES ($1, $2, $3, $4)`,
+      [
+        userId || null,
+        eventType,
+        req?.ip || null,
+        req?.headers?.['user-agent'] || null,
+      ],
+    )
+    .catch((err) => {
+      console.error('[Audit Log Non-Fatal Error]:', err.message);
+    });
+}
+
+function requireAuth(req, res, next) {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ')
+    ? header.slice(7)
+    : null;
+
+  if (!token) {
+    return res.status(401).json({
+      status: 'error',
+      message: 'Missing bearer token',
+    });
+  }
+
+  try {
+    req.user = jwt.verify(token, process.env.JWT_SECRET);
+    next();
+  } catch {
+    return res.status(401).json({
+      status: 'error',
+      message: 'Invalid or expired token',
+    });
+  }
+}
+
+function requireInternalSecret(req, res, next) {
+  const provided = req.headers['x-internal-secret'];
+  const expected = process.env.INTERNAL_SECRET;
+
+  if (!provided || !expected || !safeTimingCompare(provided, expected)) {
+    return res.status(401).json({
+      status: 'error',
+      message: 'Unauthorized',
+    });
+  }
+
+  next();
+}
+
+async function signup(req, res) {
+  const { email, password } = req.body;
+
+  if (!email || !password || password.length < 8) {
+    return res.status(400).json({
+      status: 'error',
+      message: 'Email and an 8+ character password are required',
+    });
+  }
+
+  const normalizedEmail = email.trim().toLowerCase();
+
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    const existing = await client.query(
+      'select id from users where email = $1',
+      [normalizedEmail],
+    );
+
+    if (existing.rows.length > 0) {
+      await client.query('ROLLBACK');
+
+      return res.status(409).json({
+        status: 'error',
+        message: 'An account with that email already exists',
+      });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 12);
+
+    const userResult = await client.query(
+      `insert into users
+        (email, password_hash)
+       values ($1, $2)
+       returning id, email, created_at`,
+      [normalizedEmail, passwordHash],
+    );
+
+    const user = userResult.rows[0];
+
+    const ibagResult = await client.query(
+      `insert into ibags
+        (user_id)
+       values ($1)
+       returning id, user_id, created_at`,
+      [user.id],
+    );
+
+    const ibag = ibagResult.rows[0];
+
+    /*
+     * Audit logging happens AFTER commit, not inside this transaction.
+     * A logging failure must never roll back a successful account
+     * creation — that's the actual bug this replaces.
+     */
+    await client.query('COMMIT');
+
+    logSecurityEvent(user.id, 'USER_SIGNUP_SUCCESS', req);
+
+    const token = jwt.sign(
+      {
+        id: user.id,
+        email: user.email,
+      },
+      process.env.JWT_SECRET,
+      {
+        expiresIn: '7d',
+      },
+    );
+
+    return res.status(201).json({
+      status: 'ok',
+      user,
+      ibag,
+      token,
+    });
+  } catch (err) {
+    try {
+      await client.query('ROLLBACK');
+    } catch {
+      // Transaction may already have been rolled back.
+    }
+
+    console.error('Signup failed:', err);
+
+    return res.status(500).json({
+      status: 'error',
+      message: 'Unable to create your iBag right now',
+    });
+  } finally {
+    client.release();
+  }
+}
+
 async function login(req, res) {
   const { email, password } = req.body;
 
@@ -7,10 +189,10 @@ async function login(req, res) {
 
   try {
     const result = await pool.query(
-      `SELECT id, email, password_hash
-       FROM users
-       WHERE email = $1`,
-      [normalizedEmail]
+      `select id, email, password_hash
+       from users
+       where email = $1`,
+      [normalizedEmail],
     );
 
     const dummyHash =
@@ -20,16 +202,12 @@ async function login(req, res) {
 
     const valid = await bcrypt.compare(
       password || '',
-      row ? row.password_hash : dummyHash
+      row ? row.password_hash : dummyHash,
     );
 
     if (!row || !valid) {
       if (row) {
-        await pool.query(
-          `INSERT INTO public.security_audit_logs (user_id, event_type, ip_address, user_agent)
-           VALUES ($1, 'USER_LOGIN_FAILED', $2, $3)`,
-          [row.id, req.ip, req.headers['user-agent'] || null]
-        );
+        logSecurityEvent(row.id, 'USER_LOGIN_FAILED', req);
       }
 
       return res.status(401).json({
@@ -39,29 +217,24 @@ async function login(req, res) {
     }
 
     const token = jwt.sign(
-      { id: row.id, email: row.email },
+      {
+        id: row.id,
+        email: row.email,
+      },
       process.env.JWT_SECRET,
-      { expiresIn: '15m' }
-    );
-
-    const refreshToken = jwt.sign(
-      { id: row.id, type: 'refresh' },
-      process.env.JWT_SECRET,
-      { expiresIn: '7d' }
+      {
+        expiresIn: '7d',
+      },
     );
 
     const ibagResult = await pool.query(
-      `SELECT id, user_id, created_at
-       FROM ibags
-       WHERE user_id = $1`,
-      [row.id]
+      `select id, user_id, created_at
+       from ibags
+       where user_id = $1`,
+      [row.id],
     );
 
-    await pool.query(
-      `INSERT INTO public.security_audit_logs (user_id, event_type, ip_address, user_agent)
-       VALUES ($1, 'USER_LOGIN_SUCCESS', $2, $3)`,
-      [row.id, req.ip, req.headers['user-agent'] || null]
-    );
+    logSecurityEvent(row.id, 'USER_LOGIN_SUCCESS', req);
 
     return res.json({
       status: 'ok',
@@ -71,13 +244,20 @@ async function login(req, res) {
       },
       ibag: ibagResult.rows[0] || null,
       token,
-      refreshToken,
     });
   } catch (err) {
     console.error('[Auth Error] Login processing failed:', err);
+
     return res.status(500).json({
       status: 'error',
       message: 'Unable to sign in right now',
     });
   }
 }
+
+module.exports = {
+  requireAuth,
+  requireInternalSecret,
+  signup,
+  login,
+};
